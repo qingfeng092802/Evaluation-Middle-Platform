@@ -1,0 +1,1893 @@
+openapi: 3.1.0
+
+# ============================================================================
+# Evaluation Middle Platform · REST 接口骨架
+#
+# 本文件是「路由清单 + 状态码 + 错误码」的人可读骨架，**不是**完整的请求/响应
+# Schema 定义。字段级唯一事实源是 `src/*.ts` 里的 Zod Schema——两处都写全必然漂移。
+#
+# 事实源：
+#   - 页面与按钮：docs/facts/pages-and-flows.md（PG-01…PG-10）
+#   - 表结构与约束：docs/facts/database-schema.md
+#   - 评分与成本口径：docs/facts/technical-solution.md
+#
+# ⚠️ 未经过工具链校验（没有 openapi 校验器可用），详见 README.md。
+# ============================================================================
+
+info:
+  title: Evaluation Middle Platform API
+  version: 0.1.0
+  description: |
+    企业级 AI 评测中台的内部 HTTP 接口。
+
+    三条贯穿全 API 的约定：
+    1. **不可变性**：已发布的 DatasetVersion / 终态 EvalRun / CaseResult 一律不可修改，
+       任何 `PATCH` 打到这些资源返回 `409 IMMUTABLE_VIOLATION`。
+    2. **写读非对称**：`apiKey`、`authHeader` 等凭据只写不读，响应只返回掩码值。
+    3. **成本单一事实源**：所有金额均由本平台 `model_prices` 计算，
+       不采信任何上游网关的成本统计。
+
+servers:
+  - url: http://localhost:3000
+    description: 本地 Docker 自托管（SSE 与常驻 worker 要求非 Serverless 环境）
+
+tags:
+  - name: runs
+    description: PG-01 评测运行台 / PG-02 发起评测 / PG-03 运行详情
+  - name: cases
+    description: PG-04 Badcase 诊断抽屉
+  - name: datasets
+    description: PG-05 评测集
+  - name: targets
+    description: PG-06 待测目标
+  - name: evaluators
+    description: PG-07 算子库（P1）
+  - name: compare
+    description: PG-08 报告对比（P1）
+  - name: baselines
+    description: 基线提名与确认（BL-1…BL-4）
+  - name: gates
+    description: PG-09 门禁规则（P1）与 CI 侧结果拉取（US-018）
+  - name: providers
+    description: PG-09 模型网关（P0）
+  - name: ledger
+    description: PG-10 成本台账（P1）
+  - name: stream
+    description: SSE 实时推流
+
+paths:
+  # ---------------------------------------------------------------- runs
+  /api/runs:
+    get:
+      tags: [runs]
+      summary: 运行列表（PG-01）
+      description: 支持按状态、评测集、目标过滤；按创建时间倒序。
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+        - name: status
+          in: query
+          schema: { type: string, enum: [PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED] }
+        - name: datasetId
+          in: query
+          schema: { type: string, format: uuid }
+        - name: targetId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 分页运行列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/EvalRunSummary' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+    post:
+      tags: [runs]
+      summary: 发起评测（PG-02 步骤 4「启动评测」）
+      description: |
+        服务端必须重新执行三条阻塞校验后落库，前端禁用按钮不构成保护：
+        - `BLOCKED_NO_PROVIDER_CREDENTIALS` 未配置模型网关凭证
+        - `BLOCKED_NO_EVALUATORS` 未配置任何算子
+        - `BLOCKED_NO_RETRIEVAL_ANNOTATION` 选了检索算子但版本无 retrieval.relevant
+        建 run 时一次性写入 config_snapshot 与 reproducibility（OPEN-4）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvalRunCreate' }
+      responses:
+        '201':
+          description: 已入队，status=PENDING
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRunDetail' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+        '409':
+          description: 阻塞校验未通过（code 为 BLOCKED_*）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/runs/preflight:
+    get:
+      tags: [runs]
+      summary: 发起评测前置校验（PG-01 横幅 / PG-02 步骤 3 阻塞提示）
+      parameters:
+        - name: datasetVersionId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: evaluatorKeys
+          in: query
+          description: 已选算子 key 列表，用于判定检索标注是否足够
+          schema: { type: array, items: { type: string } }
+      responses:
+        '200':
+          description: 阻塞状态与检索可用性
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunPreflight' }
+
+  /api/runs/{runId}:
+    get:
+      tags: [runs]
+      summary: 运行详情（PG-03 元数据栏 + 汇总指标卡）
+      description: |
+        **SSE 重连时的第一步**：客户端必须先拉本接口获得全量快照，再重新订阅流。
+        首版不做事件回放，快照即真相。
+      parameters:
+        - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: 详情（含 config_snapshot / reproducibility / 算子快照）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRunDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/runs/{runId}/cancel:
+    post:
+      tags: [runs]
+      summary: 中止评测（US-014）
+      description: |
+        只置 `cancel_requested_at`，**不删除、不回滚已完成结果**。
+        worker 在下一个 Case 边界感知后置 `CANCELLED`。
+        仅 `PENDING` / `RUNNING` 可用，其余状态返回 409。
+      parameters:
+        - $ref: '#/components/parameters/runId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '202':
+          description: 已接受中止请求
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvalRunSummary' }
+        '409': { $ref: '#/components/responses/IllegalTransition' }
+
+  /api/runs/{runId}/cases:
+    get:
+      tags: [runs]
+      summary: 逐条结果列表（PG-03 明细表）
+      description: P0 仅支持按得分升/降序；其余筛选属 P1。
+      parameters:
+        - $ref: '#/components/parameters/runId'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+        - name: sortBy
+          in: query
+          schema: { type: string, enum: [score, latency, caseKey], default: score }
+        - name: order
+          in: query
+          schema: { type: string, enum: [asc, desc], default: asc }
+        - name: minScore
+          in: query
+          schema: { type: number, minimum: 0, maximum: 1 }
+        - name: maxScore
+          in: query
+          schema: { type: number, minimum: 0, maximum: 1 }
+        - name: status
+          in: query
+          schema: { type: string, enum: [OK, FAILED, TIMEOUT, PARSE_ERROR, QUOTA_EXCEEDED, SKIPPED] }
+        - name: evaluatorKey
+          in: query
+          schema: { type: string }
+        - name: regressedOnly
+          in: query
+          schema: { type: boolean }
+      responses:
+        '200':
+          description: 分页结果
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/EvalCaseResult' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+
+  # ---------------------------------------------------------------- cases
+  /api/runs/{runId}/cases/{caseKey}:
+    get:
+      tags: [cases]
+      summary: 单条 Case 全貌（PG-04 抽屉）
+      description: |
+        同时返回所属 Dataset Case（输入/参考答案/检索标注）、各算子结论，
+        以及基线侧结果（用于 P1 双栏 Diff）。无已确认基线时 `hasBaseline=false`，
+        前端渲染「暂无基线，仅显示本次输出」。
+      parameters:
+        - $ref: '#/components/parameters/runId'
+        - name: caseKey
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: 诊断抽屉所需全部数据（单次请求，避免抽屉打开时抖三下）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CaseDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- stream
+  /api/runs/{runId}/stream:
+    get:
+      tags: [stream]
+      summary: 运行实时进度流（SSE）
+      description: |
+        事件类型：`snapshot` / `case` / `status` / `heartbeat` / `error`（`EvalProgressEvent`）。
+        连接建立或重连后的首个事件恒为 `snapshot`（全量）。
+        `heartbeat` 每 15s；客户端静默 30s 应主动断开并按重连流程处理。
+        **当前不做事件回放**——`Last-Event-ID` 仅用于让服务端立即回一条 snapshot。
+        （帧结构见 `EvalProgressFrame`；`id` 为预留位，`PROGRESS_RESUME_POLICY.mode`
+        固定为 `snapshot_only`。若要开启回放，见该常量的三条前置条件。）
+      parameters:
+        - $ref: '#/components/parameters/runId'
+        - name: Last-Event-ID
+          in: header
+          schema: { type: string }
+          description: '`<runId>:<单调序号>`。当前仅用于触发一次 snapshot，不做补发。'
+      responses:
+        '200':
+          description: |
+            `text/event-stream`。每帧形如：
+            ```
+            id: 6f1c…:128
+            event: case
+            data: {"type":"case","runId":"…","caseKey":"...","completedCount":128,"totalCount":300,"score":0.87,"passed":true,"status":"OK","latencyMs":812}
+            ```
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- datasets
+  /api/datasets:
+    get:
+      tags: [datasets]
+      summary: 评测集列表（PG-05）
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+        - name: keyword
+          in: query
+          schema: { type: string }
+      responses:
+        '200':
+          description: 分页列表（含最新版本号与条目数）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Dataset' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [datasets]
+      summary: 创建评测集容器（ED-01）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/datasets/{datasetId}:
+    get:
+      tags: [datasets]
+      summary: 评测集详情
+      parameters:
+        - $ref: '#/components/parameters/datasetId'
+      responses:
+        '200':
+          description: 容器元数据
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+    patch:
+      tags: [datasets]
+      summary: 更新容器元数据（仅名称/描述）
+      description: 条目与版本一律不可通过本接口改写（ED-02 不可变）。
+      parameters:
+        - $ref: '#/components/parameters/datasetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetUpdate' }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Dataset' }
+
+  /api/datasets/{datasetId}/versions:
+    get:
+      tags: [datasets]
+      summary: 版本历史（PG-05 区域 4）
+      parameters:
+        - $ref: '#/components/parameters/datasetId'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 版本列表（按 version_no 倒序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/DatasetVersion' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [datasets]
+      summary: 导入并生成新版本（PG-05「生成新版本」）
+      description: |
+        一次导入 = 一个新版本。**没有「追加到已有版本」的入口**（PT-2）。
+        `expectedContentHash` 与实际不符时返回 409，用于捕获传输截断。
+      parameters:
+        - $ref: '#/components/parameters/datasetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DatasetVersionCreate' }
+      responses:
+        '201':
+          description: 新版本已发布（不可变）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetVersion' }
+        '409':
+          description: 指纹不符或版本冲突
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/datasets/{datasetId}/versions/{versionNo}:
+    get:
+      tags: [datasets]
+      summary: 版本详情 + Case 预览
+      parameters:
+        - $ref: '#/components/parameters/datasetId'
+        - name: versionNo
+          in: path
+          required: true
+          schema: { type: integer, minimum: 1 }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 版本详情（含 immutable=true）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/DatasetVersionDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    # 刻意不提供 PUT / PATCH / DELETE —— DATASET VERSION 不可变（PT-2）
+
+  /api/datasets/imports/validate:
+    post:
+      tags: [datasets]
+      summary: 上传校验（PG-05 上传面板「通过 298 条 / 失败 2 条」）
+      description: 解析与校验在服务端完成，返回逐行错误，`canCommit=false` 时禁止生成版本。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [content, format]
+              properties:
+                content: { type: string, description: JSONL 或 CSV 原文 }
+                format: { type: string, enum: [jsonl, csv] }
+      responses:
+        '200':
+          description: 校验报告
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ImportValidationReport' }
+
+  # ---------------------------------------------------------------- targets
+  /api/targets:
+    get:
+      tags: [targets]
+      summary: 待测目标列表（PG-06）
+      parameters:
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Target' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [targets]
+      summary: 新建目标（同时生成 v1）
+      description: P0 只接受 `kind='t1_prompt'`；`t2_http` 在 P1 接入（PG-06 中置灰）。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TargetCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Target' }
+
+  /api/targets/{targetId}:
+    get:
+      tags: [targets]
+      summary: 目标详情
+      parameters:
+        - $ref: '#/components/parameters/targetId'
+      responses:
+        '200':
+          description: 目标（含当前版本配置，T2 已脱敏）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Target' }
+    patch:
+      tags: [targets]
+      summary: 更新目标（config 变化即生成新版本）
+      description: |
+        「保存后将生成 v2，历史运行仍引用 v1」。历史 EvalRun 已快照，永不回指新版本。
+      parameters:
+        - $ref: '#/components/parameters/targetId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TargetUpdate' }
+      responses:
+        '200':
+          description: 已更新（config 变化即生成新版本）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Target' }
+
+  /api/targets/{targetId}/versions:
+    get:
+      tags: [targets]
+      summary: 目标版本历史
+      parameters:
+        - $ref: '#/components/parameters/targetId'
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 版本列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/TargetVersion' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+
+  /api/targets/versions/{targetVersionId}:
+    get:
+      tags: [targets]
+      summary: 目标版本详情（供 PG-03 元数据与 PG-02 摘要使用）
+      parameters:
+        - name: targetVersionId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 版本配置
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TargetVersion' }
+
+  # ---------------------------------------------------------------- evaluators
+  /api/evaluators:
+    get:
+      tags: [evaluators]
+      summary: 算子模板列表（PG-07，P1）
+      responses:
+        '200':
+          description: 内置算子只读清单 + 自定义裁判模板
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/EvaluatorTemplate' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [evaluators]
+      summary: 新建裁判模板（PG-07「+ 新建裁判模板」）
+      description: P1 只允许新建 `kind='judge'`；六个规则算子为内置，不可新建。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvaluatorTemplateCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluatorTemplate' }
+
+  /api/evaluators/{evaluatorId}:
+    patch:
+      tags: [evaluators]
+      summary: 更新裁判模板
+      description: 模板可改；**已快照进 run_evaluators 的历史运行不受影响**（PT-1）。
+      parameters:
+        - name: evaluatorId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EvaluatorTemplateUpdate' }
+      responses:
+        '200':
+          description: 已更新（历史运行快照不受影响，PT-1）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EvaluatorTemplate' }
+
+  # ---------------------------------------------------------------- compare
+  /api/compare:
+    get:
+      tags: [compare]
+      summary: 两次运行对比（PG-08，P1）
+      description: |
+        `BL-2`：门禁的「退化超 N%」永远相对**已确认 baseline**。
+        若本次对比未使用已确认基线，`baselineConfirmed=false` 且 `banner` 非空，
+        前端必须渲染「尚未确认基线，本次对比仅供观察，不作为门禁依据」。
+      parameters:
+        - name: baselineRunId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: currentRunId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: regressionThreshold
+          in: query
+          schema: { type: number, minimum: 0, maximum: 1, default: 0 }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 汇总对比 + 逐条对比
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CompareResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+
+  # ---------------------------------------------------------------- compare diff
+  /api/compare/diff:
+    get:
+      tags: [compare]
+      summary: 双版本 AB Diff 聚合（PG-08 / PG-04 抽屉）
+      description: |
+        逐条对齐同一 `dataset_version_id` 下两个 EvalRun 的 Case 输出，
+        返回算子级 Δ、逐条 Δ 与退化聚合。
+        **对齐前提**：两个 Run 的 `dataset_version_id` 必须相同，否则返回 `400`。
+        拿不到一侧分数时判 `NOT_COMPARABLE`，**不得当 0 分处理**。
+      parameters:
+        - name: baselineRunId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: currentRunId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: regressionThreshold
+          in: query
+          schema: { type: number, minimum: 0, maximum: 1, default: 0 }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 算子级 Δ + 逐条 Δ + 聚合
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RunComparisonDiffResponse' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/baselines:
+    get:
+      tags: [baselines]
+      summary: 基线列表 / 待确认提名（PG-09「基线确认」Tab）
+      parameters:
+        - name: datasetId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+        - name: status
+          in: query
+          schema: { type: string, enum: [NOMINATED, CONFIRMED, REJECTED] }
+      responses:
+        '200':
+          description: 分页列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Baseline' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [baselines]
+      summary: 提名基线（ROLE-A 可用，BL-1/BL-3）
+      description: 只能提名，不能确认。确认是独立接口且仅 ROLE-B 可调。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BaselineNominate' }
+      responses:
+        '201':
+          description: 已提名（status=NOMINATED）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Baseline' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/baselines/{baselineId}/decision:
+    post:
+      tags: [baselines]
+      summary: 确认 / 驳回基线（仅 ROLE-B）
+      description: |
+        确认时数据库部分唯一索引 `ux_baselines_one_confirmed` 保证
+        每个评测集至多一个 CONFIRMED——并发确认会有一个失败，不会产生双基线。
+        更换基线只改「当前指向」，不覆盖任何历史 EvalRun（BL-4）。
+      parameters:
+        - name: baselineId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [approve]
+              properties:
+                approve: { type: boolean }
+                note: { type: string, maxLength: 2000 }
+      responses:
+        '200':
+          description: 已裁定
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Baseline' }
+        '403':
+          description: 非 ROLE-B
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /api/baselines/resolution:
+    get:
+      tags: [baselines]
+      summary: 某评测集当前基线解析结果
+      description: 无已确认基线时 `confirmed=null` 是**正常状态**，不是错误。
+      parameters:
+        - name: datasetId
+          in: query
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 基线解析
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [datasetId, pendingNominations]
+                properties:
+                  datasetId: { type: string, format: uuid }
+                  confirmed: { $ref: '#/components/schemas/Baseline' }
+                  pendingNominations: { type: integer, minimum: 0 }
+
+  # ---------------------------------------------------------------- gates
+  /api/gates:
+    get:
+      tags: [gates]
+      summary: 门禁规则列表（PG-09「门禁规则」Tab，P1）
+      responses:
+        '200':
+          description: 规则列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/RegressionGate' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [gates]
+      summary: 新建门禁规则
+      description: |
+        `channels` 仅允许 webhook URL。**本平台永不持有 GitHub PAT**——
+        写 PR 评论由 CI 侧（GitHub Actions）读取门禁结果自行完成。
+        规则依据：docs/工程规则.md §9。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegressionGateCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegressionGate' }
+
+  /api/gates/{gateId}:
+    patch:
+      tags: [gates]
+      summary: 更新门禁规则
+      parameters:
+        - name: gateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegressionGateUpdate' }
+      responses:
+        '200':
+          description: 已更新
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RegressionGate' }
+
+  /api/gates/results/{runId}:
+    get:
+      tags: [gates]
+      summary: 拉取门禁结果 JSON（US-018 平台侧实现边界的出口）
+      description: |
+        **平台对外只交付这一坨结构化 JSON**：不写 PR 评论、不持有 GitHub PAT、
+        不知道 PR 号。CI 侧拉取后自行决定如何评论/阻断。
+        `overall='NO_GATE'` 表示未配置任何规则，CI 不应阻断。
+      parameters:
+        - $ref: '#/components/parameters/runId'
+      responses:
+        '200':
+          description: 门禁结果信封
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GateResultEnvelope' }
+
+  # ---------------------------------------------------------------- providers
+  /api/providers:
+    get:
+      tags: [providers]
+      summary: 模型厂商列表（PG-09「模型网关」Tab，P0）
+      description: 响应只含 `apiKeyMasked`，**永不含明文 Key**。
+      responses:
+        '200':
+          description: 厂商列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ModelProvider' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [providers]
+      summary: 新增厂商与密钥
+      description: `apiKey` 明文仅在本请求体内出现一次；服务端加密后立即弃用。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelProviderCreate' }
+      responses:
+        '201':
+          description: 已创建（响应不含 apiKey）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelProvider' }
+
+  /api/providers/{providerId}:
+    patch:
+      tags: [providers]
+      summary: 更新厂商（apiKey 省略则保留原值）
+      parameters:
+        - name: providerId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelProviderUpdate' }
+      responses:
+        '200':
+          description: 已更新（响应不含 apiKey）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelProvider' }
+
+  /api/prices:
+    get:
+      tags: [providers]
+      summary: 模型单价列表（PG-09 单价配置区）
+      description: 调价不改行、只增行（`effective_from` 区分），历史成本永远可对账。
+      parameters:
+        - name: modelProviderId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 单价列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/ModelPrice' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [providers]
+      summary: 新增单价（新的生效时点）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModelPriceCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ModelPrice' }
+
+  # ---------------------------------------------------------------- ledger
+  /api/ledger:
+    get:
+      tags: [ledger]
+      summary: 成本台账（PG-10，P1）
+      description: 汇总卡 + 明细表。成本分列 target/judge（OPEN-3）。
+      parameters:
+        - name: from
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: true
+          schema: { type: string, format: date-time }
+        - name: dimension
+          in: query
+          schema: { type: string, enum: [model, dataset, user], default: model }
+        - $ref: '#/components/parameters/limit'
+        - $ref: '#/components/parameters/cursor'
+      responses:
+        '200':
+          description: 汇总 + 分页明细
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [summary, items, page]
+                properties:
+                  summary: { $ref: '#/components/schemas/CostLedgerSummary' }
+                  items: { type: array, items: { $ref: '#/components/schemas/CostLedgerRow' } }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+
+# ============================================================================
+# components
+#
+# 只声明跨接口复用的「骨架」字段。**逐字段定义以 src/*.ts 的 Zod Schema 为准。**
+# ============================================================================
+components:
+  parameters:
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    runId:
+      name: runId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    datasetId:
+      name: datasetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    targetId:
+      name: targetId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    ValidationFailed:
+      description: 请求体或参数不合法（400）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    NotFound:
+      description: 资源不存在（404）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Conflict:
+      description: 资源冲突（409）——含重复名、指纹不符、双基线
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    Immutable:
+      description: 违反不可变红线（409 IMMUTABLE_VIOLATION）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+    IllegalTransition:
+      description: 非法状态流转（409 ILLEGAL_STATE_TRANSITION）
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  schemas:
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_FAILED
+        - NOT_FOUND
+        - CONFLICT
+        - IMMUTABLE_VIOLATION
+        - ILLEGAL_STATE_TRANSITION
+        - BLOCKED_NO_PROVIDER_CREDENTIALS
+        - BLOCKED_NO_EVALUATORS
+        - BLOCKED_NO_RETRIEVAL_ANNOTATION
+        - GATEWAY_UNAVAILABLE
+        - INTERNAL_ERROR
+
+    ErrorResponse:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, requestId]
+          properties:
+            code: { $ref: '#/components/schemas/ErrorCode' }
+            message: { type: string }
+            hint:
+              type: string
+              description: 面向用户的可执行提示，可直接上屏
+            details:
+              type: object
+              additionalProperties: true
+            requestId: { type: string }
+
+    PageMeta:
+      type: object
+      required: [nextCursor]
+      properties:
+        nextCursor:
+          type: [string, 'null']
+        total:
+          type: integer
+          minimum: 0
+
+    RunStatus:
+      type: string
+      enum: [PENDING, RUNNING, COMPLETED, PARTIAL_FAILED, FAILED, CANCELLED]
+      description: |
+        RS-01…RS-06。注意 FAILED 与 PARTIAL_FAILED 必须区分：
+        前者成功数为 0（配置错误），后者成功数 > 0。
+
+    CaseResultStatus:
+      type: string
+      enum: [OK, FAILED, TIMEOUT, PARSE_ERROR, QUOTA_EXCEEDED, SKIPPED]
+
+    EvalRunSummary:
+      type: object
+      required: [id, name, status, counts, metrics]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/RunStatus' }
+        datasetLabel: { type: string }
+        targetLabel: { type: string }
+        counts:
+          type: object
+          properties:
+            totalCases: { type: integer }
+            succeededCases: { type: integer }
+            failedCases: { type: integer }
+            skippedCases: { type: integer }
+        metrics:
+          type: object
+          description: |
+            OPEN-5 三数分离：scoreOverall 质量 / passRate 可用性 / coverage 完整性。
+            FAILED 状态下 scoreOverall 必须为 null，UI 把 coverage 提到主位。
+          properties:
+            scoreOverall: { type: [number, 'null'], minimum: 0, maximum: 1 }
+            passRate: { type: [number, 'null'], minimum: 0, maximum: 1 }
+            coverage: { type: [number, 'null'], minimum: 0, maximum: 1 }
+            latencyP50Ms: { type: [integer, 'null'] }
+            latencyP95Ms: { type: [integer, 'null'] }
+            tokensInTotal: { type: integer }
+            tokensOutTotal: { type: integer }
+            costTarget: { type: number, description: 被测模型成本 }
+            costJudge: { type: number, description: 裁判模型成本 }
+            costTotal: { type: number, description: 数据库 STORED 列，不由前端累加 }
+        triggerSource:
+          type: string
+          enum: [MANUAL, CI_WEBHOOK]
+          description: 谁发起的。只影响溯源与统计，不影响执行逻辑
+        baselineRunId:
+          type: [string, 'null']
+          format: uuid
+          description: 本次运行发起时选择的对比对象。注意与 baselines 表的「正式基线」语义不同
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+
+    EvalRunDetail:
+      allOf:
+        - $ref: '#/components/schemas/EvalRunSummary'
+        - type: object
+          required: [configSnapshot, reproducibility, runnerVersion, evaluators]
+          properties:
+            configSnapshot:
+              type: object
+              description: 建 run 时的完整快照；执行期不再回查模板表（PT-1）
+            reproducibility:
+              type: object
+              description: OPEN-4。cachePolicy 恒为 "none"。
+              properties:
+                temperature: { type: [number, 'null'] }
+                topP: { type: [number, 'null'] }
+                maxTokens: { type: [integer, 'null'] }
+                seed: { type: [integer, 'null'] }
+                runnerVersion: { type: string }
+                modelVersionString: { type: [string, 'null'] }
+                promptTemplateHash: { type: string }
+                cachePolicy: { type: string, enum: [none] }
+            runnerVersion: { type: string }
+            evaluators:
+              type: array
+              items:
+                type: object
+                properties:
+                  evaluatorKey: { type: string }
+                  evaluatorVersion: { type: integer }
+                  kind: { type: string, enum: [rule, judge] }
+                  weight: { type: number }
+                  passThreshold: { type: [number, 'null'] }
+                  orderIndex: { type: integer }
+
+    EvalRunCreate:
+      type: object
+      required: [name, datasetVersionId, targetVersionId, evaluators]
+      properties:
+        name: { type: string, maxLength: 120 }
+        datasetVersionId: { type: string, format: uuid }
+        targetVersionId: { type: string, format: uuid }
+        concurrency: { type: integer, minimum: 1, maximum: 32, default: 4 }
+        baselineRunId:
+          type: string
+          format: uuid
+          description: 可选对比对象；服务端须校验其 datasetVersionId 与本次一致
+        triggerSource:
+          type: string
+          enum: [MANUAL, CI_WEBHOOK]
+          default: MANUAL
+        evaluators:
+          type: array
+          minItems: 1
+          description: 至少一个算子。config 为判别联合，见 src/evaluator.ts
+          items:
+            type: object
+            required: [config]
+            properties:
+              config:
+                type: object
+                description: 规则算子按 key 判别；裁判算子 key 恒为 "judge"
+              weight: { type: number, minimum: 0, default: 1 }
+              passThreshold: { type: number, minimum: 0, maximum: 1 }
+
+    EvalCaseResult:
+      type: object
+      required: [id, evalRunId, caseKey, status]
+      properties:
+        id: { type: string, format: uuid }
+        evalRunId: { type: string, format: uuid }
+        datasetCaseId: { type: string, format: uuid }
+        caseKey: { type: string }
+        querySummary: { type: string }
+        outputText: { type: [string, 'null'] }
+        outputRaw: { type: [object, 'null'], additionalProperties: true }
+        retrievalReturned: { type: [object, 'null'], additionalProperties: true }
+        status: { $ref: '#/components/schemas/CaseResultStatus' }
+        errorMessage: { type: [string, 'null'] }
+        score:
+          type: [number, 'null']
+          minimum: 0
+          maximum: 1
+          description: status='OK' 必有分；非 OK 必为 null（数据库 CHECK 强制）
+        passed: { type: [boolean, 'null'], description: OPEN-2 全算子 AND }
+        operatorScores:
+          type: [array, 'null']
+          description: 完整保存每算子 score/passed/threshold/weight/reason，冲突不隐藏
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              kind: { type: string, enum: [rule, judge] }
+              score: { type: number }
+              passed: { type: [boolean, 'null'] }
+              threshold: { type: [number, 'null'] }
+              weight: { type: number }
+              reason: { type: [string, 'null'] }
+        judgeReasoning: { type: [string, 'null'] }
+        latencyMs: { type: [integer, 'null'] }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        costTarget: { type: number }
+        costJudge: { type: number }
+        costTotal: { type: number }
+
+    CaseDetail:
+      type: object
+      required: [result, datasetCase, hasBaseline]
+      properties:
+        result: { $ref: '#/components/schemas/EvalCaseResult' }
+        datasetCase:
+          type: object
+          description: 归属于不可变的 Dataset Version，只读
+        hasBaseline:
+          type: boolean
+          description: false 时 PG-04 区块 3 降级为单栏并标注「暂无基线，仅显示本次输出」
+        baselineResult:
+          oneOf:
+            - $ref: '#/components/schemas/EvalCaseResult'
+            - type: 'null'
+
+    RunPreflight:
+      type: object
+      required: [hasProviderCredentials, hasEvaluators, retrievalReadiness, blockers, canStart]
+      properties:
+        hasProviderCredentials: { type: boolean }
+        hasEvaluators: { type: boolean }
+        retrievalReadiness:
+          type: object
+          properties:
+            state: { type: string, enum: [ALL, PARTIAL, NONE] }
+            annotatedCount: { type: integer }
+            totalCount: { type: integer }
+        blockers:
+          type: array
+          items:
+            type: string
+            enum:
+              - BLOCKED_NO_PROVIDER_CREDENTIALS
+              - BLOCKED_NO_EVALUATORS
+              - BLOCKED_NO_RETRIEVAL_ANNOTATION
+        canStart: { type: boolean }
+
+    Dataset:
+      type: object
+      required: [id, name]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        description: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        latestVersionNo: { type: [integer, 'null'] }
+        caseCount: { type: [integer, 'null'] }
+
+    DatasetCreate:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+
+    DatasetUpdate:
+      type: object
+      description: 仅容器元数据可改（ED-01）。条目/版本/指纹一律不可通过本接口改写。
+      properties:
+        name: { type: string, maxLength: 120 }
+        description: { type: string, maxLength: 2000 }
+
+    DatasetVersion:
+      type: object
+      required: [id, datasetId, versionNo, schemaVersion, caseCount, contentHash, source]
+      properties:
+        id: { type: string, format: uuid }
+        datasetId: { type: string, format: uuid }
+        versionNo: { type: integer, minimum: 1 }
+        schemaVersion: { type: string, enum: ['1'], description: 首版锁定 }
+        caseCount: { type: integer, minimum: 0 }
+        contentHash: { type: string, description: 内容指纹，判断两次导入是否等价 }
+        source: { type: string, enum: [import, mine, backflow] }
+        note: { type: [string, 'null'] }
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    DatasetVersionDetail:
+      allOf:
+        - $ref: '#/components/schemas/DatasetVersion'
+        - type: object
+          required: [cases, immutable]
+          properties:
+            immutable: { type: boolean, enum: [true] }
+            cases:
+              type: array
+              items:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  caseKey: { type: string, description: 跨版本对齐的唯一依据 }
+                  seq: { type: integer }
+                  input: { type: object, additionalProperties: true }
+                  reference: { type: [object, 'null'], additionalProperties: true }
+                  retrieval:
+                    type: [object, 'null']
+                    description: 'relevant:[{doc_id,grade}] —— 三个检索算子的唯一依据'
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: [string, number, boolean]
+                    description: 业务标签（难度/域/优先级等）；只做筛选，永不参与打分
+
+    DatasetVersionCreate:
+      type: object
+      required: [source, cases]
+      properties:
+        source: { type: string, enum: [import, mine, backflow] }
+        note: { type: string, maxLength: 2000 }
+        expectedContentHash:
+          type: string
+          description: 与平台计算不符则 409，用于捕获传输截断
+        cases:
+          type: array
+          minItems: 1
+          items:
+            type: object
+            required: [input]
+            properties:
+              caseKey:
+                type: string
+                description: 缺省 = 规范化 input 的 hash
+              input:
+                type: object
+                required: [query]
+                additionalProperties: true
+                properties:
+                  query: { type: string, minLength: 1 }
+              reference: { type: object, additionalProperties: true }
+              metadata:
+                type: object
+                additionalProperties:
+                  type: [string, number, boolean]
+                description: 业务标签；缺省视为 {}
+              retrieval:
+                type: object
+                required: [relevant]
+                properties:
+                  relevant:
+                    type: array
+                    minItems: 1
+                    items:
+                      type: object
+                      required: [doc_id, grade]
+                      properties:
+                        doc_id: { type: string }
+                        grade: { type: integer, minimum: 0 }
+
+    ImportValidationReport:
+      type: object
+      required: [okCount, failedCount, issues, canCommit]
+      properties:
+        okCount: { type: integer }
+        failedCount: { type: integer }
+        canCommit: { type: boolean }
+        issues:
+          type: array
+          items:
+            type: object
+            required: [line, message]
+            properties:
+              line: { type: integer, minimum: 1 }
+              field: { type: string }
+              message: { type: string }
+
+    Target:
+      type: object
+      required: [id, name, kind, currentVersionNo]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [t1_prompt, t2_http] }
+        currentVersionNo: { type: integer, minimum: 0 }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+        currentVersion:
+          oneOf:
+            - $ref: '#/components/schemas/TargetVersion'
+            - type: 'null'
+
+    TargetVersion:
+      type: object
+      required: [id, targetId, versionNo, config]
+      properties:
+        id: { type: string, format: uuid }
+        targetId: { type: string, format: uuid }
+        versionNo: { type: integer, minimum: 1 }
+        config:
+          oneOf:
+            - $ref: '#/components/schemas/T1TargetConfig'
+            - $ref: '#/components/schemas/T2TargetConfigRedacted'
+        createdBy: { type: string }
+        createdAt: { type: string, format: date-time }
+
+    TargetCreate:
+      type: object
+      required: [name, config]
+      properties:
+        name: { type: string, maxLength: 120 }
+        config:
+          oneOf:
+            - $ref: '#/components/schemas/T1TargetConfig'
+            - $ref: '#/components/schemas/T2TargetConfig'
+          discriminator:
+            propertyName: kind
+            mapping:
+              t1_prompt: '#/components/schemas/T1TargetConfig'
+              t2_http: '#/components/schemas/T2TargetConfig'
+
+    T1TargetConfig:
+      type: object
+      required: [kind, modelProviderId, modelId, promptTemplate, temperature, maxTokens]
+      properties:
+        kind: { type: string, enum: [t1_prompt] }
+        modelProviderId: { type: string, format: uuid }
+        modelId: { type: string }
+        promptTemplate:
+          type: string
+          # 不能写成 flow mapping：`{{input}}` 的 `{`/`}` 在流式上下文里是保留字符，会解析失败
+          description: '变量写作 {{input}} 形式'
+        temperature: { type: number, minimum: 0, maximum: 2 }
+        maxTokens: { type: integer, minimum: 1 }
+        params: { type: object, additionalProperties: true }
+
+    TargetUpdate:
+      type: object
+      description: |
+        部分更新。`name` 变化只改容器；`config` 变化则生成新版本（保存后生成 v2，
+        历史运行仍引用 v1）。
+      properties:
+        name: { type: string, maxLength: 120 }
+        config:
+          oneOf:
+            - $ref: '#/components/schemas/T1TargetConfig'
+            - $ref: '#/components/schemas/T2TargetConfig'
+          discriminator:
+            propertyName: kind
+            mapping:
+              t1_prompt: '#/components/schemas/T1TargetConfig'
+              t2_http: '#/components/schemas/T2TargetConfig'
+
+    T2TargetConfig:
+      type: object
+      required: [kind, endpointUrl, requestMapping, responseMapping]
+      properties:
+        kind: { type: string, enum: [t2_http] }
+        endpointUrl: { type: string, format: uri }
+        authHeader:
+          type: string
+          description: 只写不读。落 auth_header_ciphertext，任何响应都不返回
+        requestMapping: { type: object, additionalProperties: { type: string } }
+        responseMapping: { type: object, additionalProperties: { type: string } }
+
+    T2TargetConfigRedacted:
+      type: object
+      required: [kind, endpointUrl, requestMapping, responseMapping, hasAuthHeader]
+      properties:
+        kind: { type: string, enum: [t2_http] }
+        endpointUrl: { type: string, format: uri }
+        hasAuthHeader: { type: boolean, description: 只暴露「有没有配」，不暴露值 }
+        requestMapping: { type: object, additionalProperties: { type: string } }
+        responseMapping: { type: object, additionalProperties: { type: string } }
+
+    EvaluatorTemplate:
+      type: object
+      required: [id, key, kind, displayName, isBuiltin, version]
+      properties:
+        id: { type: string, format: uuid }
+        key:
+          type: string
+          description: 内置六个固定 key；自定义裁判形如 judge.<slug>
+        kind: { type: string, enum: [rule, judge] }
+        displayName: { type: string }
+        description: { type: [string, 'null'] }
+        isBuiltin: { type: boolean }
+        version: { type: integer, minimum: 1 }
+        configSchema: { type: object, additionalProperties: true }
+        defaultConfig: { type: object, additionalProperties: true }
+        createdBy: { type: [string, 'null'] }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    EvaluatorTemplateCreate:
+      type: object
+      required: [key, displayName, config]
+      properties:
+        key: { type: string }
+        displayName: { type: string }
+        description: { type: string }
+        config:
+          type: object
+          description: P1 只允许裁判算子（key="judge"）
+
+    EvaluatorTemplateUpdate:
+      type: object
+      description: |
+        部分更新。模板可改，**已快照进 run_evaluators 的历史运行不受影响**（PT-1）。
+      properties:
+        displayName: { type: string }
+        description: { type: string }
+        config:
+          type: object
+          description: 裁判算子配置
+
+    CompareResponse:
+      type: object
+      required: [baselineRun, currentRun, metrics, cases, page, baselineConfirmed, banner]
+      properties:
+        baselineRun: { $ref: '#/components/schemas/EvalRunSummary' }
+        currentRun: { $ref: '#/components/schemas/EvalRunSummary' }
+        metrics:
+          type: array
+          items:
+            type: object
+            properties:
+              metric: { type: string, enum: [score_overall, pass_rate, coverage, latency_p50_ms, latency_p95_ms, cost_total] }
+              label: { type: string }
+              baseline: { type: [number, 'null'] }
+              current: { type: [number, 'null'] }
+              delta: { type: [number, 'null'] }
+              deltaPct: { type: [number, 'null'] }
+              higherIsBetter: { type: boolean }
+        cases:
+          type: array
+          items:
+            type: object
+            properties:
+              caseKey: { type: string }
+              baselineScore: { type: [number, 'null'] }
+              currentScore: { type: [number, 'null'] }
+              delta: { type: [number, 'null'] }
+              regressed: { type: boolean }
+              comparable: { type: boolean }
+              alignmentWarning: { type: [string, 'null'] }
+        page: { $ref: '#/components/schemas/PageMeta' }
+        baselineConfirmed:
+          type: boolean
+          description: false 时前端必须显示「本次对比仅供观察，不作为门禁依据」
+        banner: { type: [string, 'null'] }
+
+    # 双版本 AB Diff（`eval-contracts.ts` 的 RunComparisonDiffResponse）。
+    # 是 CompareResponse 的超集：新增算子级 Δ、逐条 Δ、聚合计数与阈值回显。
+    RunComparisonDiffResponse:
+      allOf:
+        - $ref: '#/components/schemas/CompareResponse'
+        - type: object
+          required: [datasetVersionId, operators, cases, summary, regressionThreshold]
+          properties:
+            datasetVersionId:
+              type: string
+              format: uuid
+              description: '对齐前提。两个 Run 的 dataset_version_id 必须相同，否则接口应直接拒绝'
+            regressionThreshold:
+              type: number
+              minimum: 0
+              maximum: 1
+              description: '本次判定退化所用的阈值，回显给前端展示'
+            operators:
+              type: array
+              description: '算子级均分对比。mean 的分母是该算子有效计分的 Case 数，不是总 Case 数'
+              items:
+                type: object
+                properties:
+                  evaluatorKey: { type: string }
+                  kind: { type: string, enum: [rule, judge] }
+                  baselineMean: { type: [number, 'null'] }
+                  currentMean: { type: [number, 'null'] }
+                  delta: { type: [number, 'null'] }
+                  deltaPct: { type: [number, 'null'] }
+                  baselineScoredCount: { type: integer, minimum: 0 }
+                  currentScoredCount: { type: integer, minimum: 0 }
+                  regressedCount: { type: integer, minimum: 0 }
+                  improvedCount: { type: integer, minimum: 0 }
+                  verdict:
+                    type: string
+                    enum: [REGRESSED, IMPROVED, UNCHANGED, NOT_COMPARABLE]
+            cases:
+              type: array
+              description: |
+                CompareResponse.cases 的超集。**刻意把基类字段全部重述一遍**——
+                JSON Schema 的 allOf 只做交集，代码生成器不会帮你合并两份 items 定义；
+                少写一个基类字段，生成出来的类型就会缺字段。对齐键恒为 `case_key`。
+              items:
+                type: object
+                properties:
+                  caseKey: { type: string }
+                  comparable: { type: boolean }
+                  alignmentWarning: { type: [string, 'null'] }
+                  baselineStatus: { $ref: '#/components/schemas/CaseResultStatus' }
+                  currentStatus: { $ref: '#/components/schemas/CaseResultStatus' }
+                  baselineScore: { type: [number, 'null'] }
+                  currentScore: { type: [number, 'null'] }
+                  delta: { type: [number, 'null'] }
+                  regressed: { type: boolean }
+                  verdict:
+                    type: string
+                    enum: [REGRESSED, IMPROVED, UNCHANGED, NOT_COMPARABLE]
+                  operators:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        evaluatorKey: { type: string }
+                        kind: { type: string, enum: [rule, judge] }
+                        baselineScore: { type: [number, 'null'] }
+                        currentScore: { type: [number, 'null'] }
+                        delta: { type: [number, 'null'] }
+                        verdict:
+                          type: string
+                          enum: [REGRESSED, IMPROVED, UNCHANGED, NOT_COMPARABLE]
+                  baselineOutputText: { type: [string, 'null'] }
+                  currentOutputText: { type: [string, 'null'] }
+                  baselineResultId: { type: [string, 'null'], format: uuid }
+                  currentResultId: { type: [string, 'null'], format: uuid }
+            summary:
+              type: object
+              properties:
+                totalCases: { type: integer, minimum: 0 }
+                comparableCases: { type: integer, minimum: 0 }
+                regressedCases: { type: integer, minimum: 0 }
+                improvedCases: { type: integer, minimum: 0 }
+                unchangedCases: { type: integer, minimum: 0 }
+                notComparableCases: { type: integer, minimum: 0 }
+
+    EvalProgressFrame:
+      type: object
+      description: |
+        SSE 线上帧。`id` 是 `Last-Event-ID` 的取值来源，与业务载荷分开存放。
+        `event` 必须等于 `data.type`，否则客户端分派错乱。
+      required: [id, event, data]
+      properties:
+        id:
+          type: string
+          description: '约定为 <runId>:<单调序号>'
+        event:
+          type: string
+          enum: [snapshot, case, status, heartbeat, error]
+        retryMs:
+          type: [integer, 'null']
+          description: 'SSE retry 字段；null 表示不指示，沿用浏览器默认退避'
+        data:
+          type: object
+          description: 'EvalProgressEvent（= RunStreamEvent），按 type 判别五类载荷'
+
+    Baseline:
+      type: object
+      required: [id, datasetId, evalRunId, status, nominatedBy, nominatedAt]
+      properties:
+        id: { type: string, format: uuid }
+        datasetId: { type: string, format: uuid }
+        evalRunId: { type: string, format: uuid }
+        status: { type: string, enum: [NOMINATED, CONFIRMED, REJECTED] }
+        note: { type: [string, 'null'] }
+        nominatedBy: { type: string }
+        nominatedAt: { type: string, format: date-time }
+        decidedBy: { type: [string, 'null'] }
+        decidedAt: { type: [string, 'null'], format: date-time }
+
+    BaselineNominate:
+      type: object
+      required: [datasetId, evalRunId, note]
+      properties:
+        datasetId: { type: string, format: uuid }
+        evalRunId: { type: string, format: uuid }
+        note: { type: string, maxLength: 2000, description: 提名理由，不可为空 }
+
+    RegressionGate:
+      type: object
+      required: [id, name, datasetId, condition, action, isActive, channels]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        datasetId: { type: string, format: uuid }
+        targetId: { type: [string, 'null'], format: uuid }
+        baselineId: { type: [string, 'null'], format: uuid }
+        condition: { $ref: '#/components/schemas/GateCondition' }
+        action: { type: string, enum: [BLOCK, WARN] }
+        isActive: { type: boolean }
+        channels:
+          type: array
+          description: 仅 webhook URL，绝无 PAT
+          items:
+            type: object
+            required: [kind, url]
+            properties:
+              kind: { type: string, enum: [feishu, wecom, webhook] }
+              url: { type: string, format: uri }
+
+    RegressionGateCreate:
+      type: object
+      required: [name, datasetId, condition]
+      properties:
+        name: { type: string }
+        datasetId: { type: string, format: uuid }
+        targetId: { type: [string, 'null'], format: uuid }
+        baselineId: { type: [string, 'null'], format: uuid }
+        condition: { $ref: '#/components/schemas/GateCondition' }
+        action: { type: string, enum: [BLOCK, WARN], default: BLOCK }
+        channels:
+          type: array
+          items:
+            type: object
+            required: [kind, url]
+            properties:
+              kind: { type: string, enum: [feishu, wecom, webhook] }
+              url: { type: string, format: uri }
+
+    GateCondition:
+      type: object
+      required: [metric, op, value]
+      properties:
+        metric:
+          type: string
+          enum: [score_overall, pass_rate, regression_pct]
+          description: regression_pct 恒相对已确认 baseline 计算（BL-2）
+        op: { type: string, enum: ['<', '>'] }
+        value:
+          type: number
+          description: 绝对指标取 [0,1]；regression_pct 单位为百分点
+
+    RegressionGateUpdate:
+      type: object
+      description: |
+        部分更新。**刻意不复用 RegressionGateCreate**：
+        那会带着 `action`/`channels` 的默认值，导致省略即被重置。
+        这里字段全部无默认，语义才是「不传即不改」。
+      properties:
+        name: { type: string }
+        datasetId: { type: string, format: uuid }
+        targetId: { type: [string, 'null'], format: uuid }
+        baselineId: { type: [string, 'null'], format: uuid }
+        condition: { $ref: '#/components/schemas/GateCondition' }
+        action: { type: string, enum: [BLOCK, WARN] }
+        channels:
+          type: array
+          items:
+            type: object
+            required: [kind, url]
+            properties:
+              kind: { type: string, enum: [feishu, wecom, webhook] }
+              url: { type: string, format: uri }
+        isActive: { type: boolean }
+
+    GateResultEnvelope:
+      type: object
+      required: [schemaVersion, generatedAt, evalRunId, metrics, baseline, evaluations, overall]
+      properties:
+        schemaVersion: { type: string, enum: ['1'] }
+        generatedAt: { type: string, format: date-time }
+        evalRunId: { type: string, format: uuid }
+        runName: { type: string }
+        datasetId: { type: string, format: uuid }
+        datasetVersionId: { type: string, format: uuid }
+        targetId: { type: string, format: uuid }
+        targetVersionId: { type: string, format: uuid }
+        metrics:
+          type: object
+          properties:
+            scoreOverall: { type: [number, 'null'] }
+            passRate: { type: [number, 'null'] }
+            coverage: { type: [number, 'null'] }
+            costTotal: { type: number }
+        baseline:
+          oneOf:
+            - type: 'null'
+            - type: object
+              properties:
+                evalRunId: { type: string, format: uuid }
+                scoreOverall: { type: [number, 'null'] }
+                passRate: { type: [number, 'null'] }
+        evaluations:
+          type: array
+          items:
+            type: object
+            properties:
+              gateId: { type: string, format: uuid }
+              gateName: { type: string }
+              action: { type: string, enum: [BLOCK, WARN] }
+              passed: { type: boolean }
+              detail:
+                type: object
+                properties:
+                  metric: { type: string }
+                  baselineValue: { type: [number, 'null'] }
+                  currentValue: { type: [number, 'null'] }
+                  delta: { type: [number, 'null'] }
+                  op: { type: string, enum: ['<', '>'] }
+                  value: { type: number }
+        overall:
+          type: string
+          enum: [PASS, FAIL, NO_GATE]
+          description: NO_GATE = 未配置规则，CI 不应阻断
+
+    ModelProvider:
+      type: object
+      required: [id, name, kind, apiKeyMasked, maxConcurrency, isActive]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [openai_compatible, anthropic, litellm] }
+        baseUrl: { type: [string, 'null'], format: uri }
+        apiKeyMasked:
+          type: string
+          description: 形如 sk-••••3f2a。**响应中永不含明文 Key**
+        maxConcurrency: { type: integer, minimum: 1 }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    ModelProviderCreate:
+      type: object
+      required: [name, kind, apiKey]
+      properties:
+        name: { type: string, maxLength: 120 }
+        kind: { type: string, enum: [openai_compatible, anthropic, litellm] }
+        baseUrl: { type: string, format: uri }
+        apiKey:
+          type: string
+          description: 明文仅在本请求体内出现一次；加密后立即弃用，绝不回显、不写日志
+        maxConcurrency: { type: integer, minimum: 1, maximum: 64, default: 4 }
+
+    ModelProviderUpdate:
+      type: object
+      description: |
+        部分更新。`apiKey` 省略 ⇒ 保留原 Key；提供 ⇒ 覆盖。
+        不存在「读出原 Key 再回填」的路径，UI 只能显示掩码 + 重新输入。
+      properties:
+        name: { type: string, maxLength: 120 }
+        baseUrl: { type: [string, 'null'], format: uri }
+        apiKey: { type: string }
+        maxConcurrency: { type: integer, minimum: 1, maximum: 64 }
+        isActive: { type: boolean }
+
+    ModelPrice:
+      type: object
+      required: [id, modelProviderId, modelId, inputPricePer1k, outputPricePer1k, currency, effectiveFrom]
+      properties:
+        id: { type: string, format: uuid }
+        modelProviderId: { type: string, format: uuid }
+        modelId: { type: string }
+        displayName: { type: string }
+        inputPricePer1k: { type: number, minimum: 0 }
+        outputPricePer1k: { type: number, minimum: 0 }
+        currency: { type: string, enum: [CNY, USD] }
+        effectiveFrom:
+          type: string
+          format: date-time
+          description: 调价只增行不改行，历史成本恒可对账
+        createdAt: { type: string, format: date-time }
+
+    ModelPriceCreate:
+      type: object
+      required: [modelProviderId, modelId, displayName, inputPricePer1k, outputPricePer1k]
+      properties:
+        modelProviderId: { type: string, format: uuid }
+        modelId: { type: string }
+        displayName: { type: string }
+        inputPricePer1k: { type: number, minimum: 0 }
+        outputPricePer1k: { type: number, minimum: 0 }
+        currency: { type: string, enum: [CNY, USD], default: CNY }
+        effectiveFrom: { type: string, format: date-time }
+
+    CostLedgerSummary:
+      type: object
+      required: [tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount]
+      properties:
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        costTarget: { type: number }
+        costJudge: { type: number }
+        costTotal: { type: number }
+        runCount: { type: integer }
+
+    CostLedgerRow:
+      type: object
+      required: [dimensionKey, label, tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount]
+      properties:
+        dimensionKey: { type: string }
+        label: { type: string }
+        tokensIn: { type: integer }
+        tokensOut: { type: integer }
+        costTarget: { type: number }
+        costJudge: { type: number }
+        costTotal: { type: number }
+        runCount: { type: integer }

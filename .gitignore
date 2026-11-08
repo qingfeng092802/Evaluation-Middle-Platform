@@ -1,0 +1,96 @@
+# ============================================================
+#  Evaluation Middle Platform · src/ 仓库忽略规则
+#  规则依据：docs/工程规则.md 第 9 节「安全与凭据约束」
+# ============================================================
+
+# ---------- 密钥与凭据（最高优先级，绝不入库）----------
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+.secrets/
+credentials.json
+service-account*.json
+
+# 各厂商大模型 API Key 的本地配置文件
+.api-keys
+api-keys.*
+*-apikey.*
+
+# ---------- 真实用户评测数据（绝不入库）----------
+data/real/
+data/uploads/
+data/exports/
+*.evaldata
+*.golden.private.*
+
+# ---------- 本地数据库文件 ----------
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# ---------- 依赖 ----------
+node_modules/
+.pnpm-store/
+.pnp.*
+.yarn/cache
+.yarn/install-state.gz
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.python-version
+
+# ---------- 构建产物 ----------
+dist/
+build/
+out/
+.next/
+.turbo/
+.nuxt/
+coverage/
+.nyc_output/
+htmlcov/
+*.tsbuildinfo
+
+# ---------- 日志与临时文件 ----------
+logs/
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*~
+
+# ---------- 测试与工具缓存 ----------
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+playwright-report/
+test-results/
+blob-report/
+
+# ---------- 编辑器 / 操作系统 ----------
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
+desktop.ini
