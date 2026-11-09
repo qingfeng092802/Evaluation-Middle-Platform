@@ -4,9 +4,9 @@
 #
 #  为什么放在仓库里而不是 `.git/hooks/pre-commit`：
 #  `.git/` 不入版本库，写在那里的钩子换台机器就没了 —— 那种门禁只对作者本人生效。
-#  本文件随代码提交，启用方式见 `package.json` 的 `prepare:hooks` 脚本：
+#  本文件随代码提交，启用方式见 `package.json` 的 `hooks:enable` 脚本：
 #
-#      git config core.hooksPath .githooks
+#      npm run hooks:enable     # = git config core.hooksPath .githooks
 #
 #  三道门禁缺一不可：
 #    typecheck —— 类型错了连测试都跑不起来；
