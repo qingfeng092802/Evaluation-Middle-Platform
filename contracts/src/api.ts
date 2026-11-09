@@ -27,6 +27,7 @@ import {
   Dataset,
   DatasetCase,
   DatasetCreate,
+  DatasetSource,
   DatasetUpdate,
   DatasetVersion,
   DatasetVersionCreate,
@@ -210,6 +211,27 @@ export const DatasetImportValidate = z.object({
 });
 export type DatasetImportValidate = z.infer<typeof DatasetImportValidate>;
 
+/**
+ * 上传文件直接生成版本（`PG-05` 区域 3 的「生成新版本」）。
+ *
+ * 与 `DatasetVersionCreate` 的区别：**入参是文件原文而不是解析好的 `cases`**。
+ *
+ * 为什么需要它：浏览器侧若自己解析一遍 JSONL / CSV，`lib/import/` 就有两份实现，
+ * 行号口径（`D-11`：CSV 表头计入物理行号）会立刻分裂——而「第 47 行 / 第 48 行」
+ * 正是产品里唯一被精确规定过的错误文案。
+ *
+ * 服务端解析后走**同一条** `commitDatasetVersion`，所以 `expectedContentHash`
+ * 与「同指纹不产生新版本」两个保护都照常生效。
+ */
+export const DatasetUploadCommit = z.object({
+  content: z.string().min(1),
+  format: z.enum(['jsonl', 'csv']),
+  /** 与 `DatasetVersionCreate.source` 同义；文件导入恒为 `import`，留口以备回流。 */
+  source: DatasetSource.default('import'),
+  note: z.string().max(2000).optional(),
+});
+export type DatasetUploadCommit = z.infer<typeof DatasetUploadCommit>;
+
 // ---------------------------------------------------------------------------
 // PG-08 · 报告对比
 // ---------------------------------------------------------------------------
@@ -318,6 +340,7 @@ export type DatasetCreateBody = z.infer<typeof DatasetCreate>;
 export type DatasetUpdateBody = z.infer<typeof DatasetUpdate>;
 export type DatasetVersionCreateBody = z.infer<typeof DatasetVersionCreate>;
 export type DatasetImportValidateBody = z.infer<typeof DatasetImportValidate>;
+export type DatasetUploadCommitBody = z.infer<typeof DatasetUploadCommit>;
 export type DatasetVersionDetailView = z.infer<typeof DatasetVersionDetail>;
 export type ImportValidationReportView = z.infer<typeof ImportValidationReport>;
 
