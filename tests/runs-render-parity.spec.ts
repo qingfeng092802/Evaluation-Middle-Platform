@@ -69,6 +69,8 @@ function perfectCompletedRun(overrides: Partial<EvalRun> = {}): EvalRun {
     startedAt: '2026-11-10T08:00:01.000Z',
     finishedAt: '2026-11-10T08:00:42.000Z',
     cancelRequestedAt: null,
+    // M2-3 Fencing token：COMPLETED 的 run 至少被领取过一次。
+    claimEpoch: 1,
     ...overrides,
   };
 }

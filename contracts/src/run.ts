@@ -188,6 +188,18 @@ export const EvalRun = z.object({
   finishedAt: IsoDateTime.nullable(),
   /** 非 null ⇒ 已收到中止请求（PG-03「中止评测」）。 */
   cancelRequestedAt: IsoDateTime.nullable(),
+  /**
+   * **Fencing token**（M2-3，`0019_claim_epoch.sql`）。
+   *
+   * 每次 `claim_next_run()` 领取时 `+1`。worker 的所有写入（心跳、结果、终态）
+   * 都带 `WHERE claim_epoch = $epoch`：旧属主恢复后写不进任何东西，
+   * 影响行数 0 即表示「我已不是属主」。
+   *
+   * 读形状暴露它是为了让 `PG-03` 能显示「本次执行的属主代次」——
+   * 排查「两个 worker 抢同一条 run」时，这是唯一的现场证据。
+   * `PENDING`（从未被领取）为 `0`。
+   */
+  claimEpoch: z.number().int().min(0),
 });
 export type EvalRun = z.infer<typeof EvalRun>;
 

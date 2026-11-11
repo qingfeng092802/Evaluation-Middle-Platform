@@ -57,6 +57,8 @@ import {
   ModelPriceCreate,
   ModelProvider,
   ModelProviderCreate,
+  ModelProviderProbeRequest,
+  ModelProviderProbeResult,
   ModelProviderUpdate,
   CostLedgerRow,
   CostLedgerSummary,
@@ -329,6 +331,8 @@ export const GateResultResponse = z.object({ gateResult: GateResultEnvelope });
  */
 export const WRITE_ONLY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   ModelProviderCreate: ['apiKey'],
+  /** 探针的临时覆盖 Key：明文只走这一次请求，响应里绝不回显。 */
+  ModelProviderProbeRequest: ['apiKeyOverride'],
   TargetVersionConfig_t2_http: ['authHeader'],
 } as const;
 
@@ -358,6 +362,8 @@ export type EvaluatorTemplateUpdateBody = z.infer<typeof EvaluatorTemplateUpdate
 
 export type ModelProviderCreateBody = z.infer<typeof ModelProviderCreate>;
 export type ModelProviderUpdateBody = z.infer<typeof ModelProviderUpdate>;
+export type ModelProviderProbeRequestBody = z.infer<typeof ModelProviderProbeRequest>;
+export type ModelProviderProbeResultView = z.infer<typeof ModelProviderProbeResult>;
 export type ModelPriceCreateBody = z.infer<typeof ModelPriceCreate>;
 
 export type RegressionGateCreateBody = z.infer<typeof RegressionGateCreate>;

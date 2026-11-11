@@ -80,6 +80,15 @@ export const evalRuns = pgTable(
      * NULL 表示尚未心跳，回收判定回退到 `started_at`。
      */
     heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    /**
+     * **Fencing token**（M2-3，`0019_claim_epoch.sql`）。
+     *
+     * 每次 `claim_next_run()` 领取时 `+1`。worker 的心跳、结果、终态写入都带
+     * `WHERE claim_epoch = $epoch`：旧属主（GC 停顿后恢复）的所有写入自动失效，
+     * 影响行数 0 即表示「我已不是属主」，立即放弃且不写任何结果。
+     * `PENDING`（从未被领取）为 `0`。
+     */
+    claimEpoch: bigint('claim_epoch', { mode: 'number' }).notNull().default(0),
   },
   (t) => ({
     ckStatus: check(
