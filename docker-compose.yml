@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: eval-platform-db
+    # 刻意不用默认 5432：本机可能已有其他 PostgreSQL 实例在跑，端口冲突会让
+    # 「迁移失败」看起来像代码 bug。5433 只在本机回环暴露。
+    ports:
+      - '127.0.0.1:5433:5432'
+    environment:
+      POSTGRES_USER: eval
+      POSTGRES_PASSWORD: eval_local_dev_only
+      POSTGRES_DB: eval_platform
+      # 排序规则固定，避免不同机器上 ORDER BY case_key 结果不一致
+      LANG: C.UTF-8
+    command:
+      - postgres
+      - -c
+      - timezone=UTC
+      - -c
+      - log_timezone=UTC
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U eval -d eval_platform']
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - eval_pgdata:/var/lib/postgresql/data
+
+volumes:
+  eval_pgdata:

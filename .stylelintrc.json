@@ -1,0 +1,31 @@
+{
+  "extends": ["stylelint-config-standard", "stylelint-config-tailwindcss"],
+  "rules": {
+    "color-no-hex": true,
+    "color-named": "never",
+    "color-function-notation": null,
+    "alpha-value-notation": null,
+    "custom-property-pattern": null,
+    "selector-class-pattern": null,
+    "at-rule-prelude-no-invalid": [
+      true,
+      {
+        "ignoreAtRules": ["apply", "tailwind", "layer", "screen"]
+      }
+    ],
+    "custom-property-empty-line-before": null,
+    "declaration-empty-line-before": null,
+    "declaration-block-no-redundant-longhand-properties": null,
+    "no-descending-specificity": null,
+    "font-family-name-quotes": "always-where-recommended"
+  },
+  "overrides": [
+    {
+      "files": ["app/globals.css"],
+      "rules": {
+        "color-no-hex": null,
+        "color-named": null
+      }
+    }
+  ]
+}

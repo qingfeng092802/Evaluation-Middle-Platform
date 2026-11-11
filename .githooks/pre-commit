@@ -1,0 +1,31 @@
+#!/bin/sh
+# ============================================================================
+#  Pre-commit 机械门禁（`SPEC-M1` Step 1 / `[FE-01]`）
+#
+#  为什么放在仓库里而不是 `.git/hooks/pre-commit`：
+#  `.git/` 不入版本库，写在那里的钩子换台机器就没了 —— 那种门禁只对作者本人生效。
+#  本文件随代码提交，启用方式见 `package.json` 的 `hooks:enable` 脚本：
+#
+#      npm run hooks:enable     # = git config core.hooksPath .githooks
+#
+#  三道门禁缺一不可：
+#    typecheck —— 类型错了连测试都跑不起来；
+#    lint      —— AS-1/AS-2 与分层边界（`eslint.config.mjs`）；
+#    test      —— L1 单测 + L2 真库集成切片。
+#
+#  跳过：`git commit --no-verify`（仅在确认是钩子自身故障时使用）。
+# ============================================================================
+set -eu
+
+cd "$(git rev-parse --show-toplevel)"
+
+echo "[pre-commit] typecheck …"
+npm run typecheck --silent
+
+echo "[pre-commit] lint …"
+npm run lint --silent
+
+echo "[pre-commit] test …"
+npm test --silent -- --reporter=dot
+
+echo "[pre-commit] 全部门禁通过"

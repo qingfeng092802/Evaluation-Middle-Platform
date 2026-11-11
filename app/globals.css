@@ -1,0 +1,157 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * ⚠️ 本文件是**全仓库唯一**允许出现 hex / HSL 数值的地方（`DESIGN.md` §2.1）。
+ * 其它任何 .tsx / .css 都必须引用这里定义的语义 Token。
+ * `npm run check:tokens` 与 ESLint `AS-2` 共同守着这条线。
+ */
+
+@layer base {
+  :root {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --body-foreground: 215 25% 27%;
+    --foreground-subtle: 215 19% 35%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215 16% 47%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 221 83% 53%;
+    --primary: 221 83% 53%;
+    --primary-foreground: 0 0% 100%;
+    --radius: 6px;
+
+    --eval-pass-fg: 159 94% 27%;
+    --eval-pass-bg: 152 81% 96%;
+    --eval-pass-mark: 160 84% 39%;
+    --eval-fail-fg: 0 75% 43%;
+    --eval-fail-bg: 0 86% 97%;
+    --eval-fail-mark: 0 72% 51%;
+    --eval-warn-fg: 26 90% 37%;
+    --eval-warn-bg: 48 100% 96%;
+    --eval-warn-mark: 32 95% 44%;
+    --eval-running-fg: 201 96% 32%;
+    --eval-running-bg: 204 94% 94%;
+    --eval-running-mark: 200 98% 40%;
+
+    --diff-del-fg: 343 80% 35%;
+    --diff-del-bg: 356 100% 95%;
+    --diff-add-fg: 143 60% 24%;
+    --diff-add-bg: 141 84% 93%;
+
+    --chart-1: 213 68% 50%;
+    --chart-2: 17 82% 56%;
+    --chart-3: 159 73% 40%;
+    --chart-4: 41 100% 46%;
+    --chart-5: 337 70% 70%;
+    --chart-baseline: 215 16% 47%;
+    --chart-grid: 214 32% 91%;
+    --chart-axis: 212 27% 84%;
+
+    --shadow-overlay: 0 8px 24px rgb(15 23 42 / 0.08);
+  }
+
+  .dark {
+    --background: 222 47% 11%;
+    --foreground: 210 40% 98%;
+    --body-foreground: 215 20% 65%;
+    --foreground-subtle: 215 17% 60%;
+    --card: 217 33% 17%;
+    --card-foreground: 210 40% 98%;
+    --muted: 217 33% 17%;
+    --muted-foreground: 215 20% 65%;
+    --border: 215 25% 27%;
+    --input: 215 25% 27%;
+    --ring: 217 91% 60%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 222 47% 11%;
+
+    --eval-pass-fg: 158 64% 52%;
+    --eval-pass-bg: 164 42% 16%;
+    --eval-pass-mark: 158 64% 52%;
+    --eval-fail-fg: 0 91% 71%;
+    --eval-fail-bg: 0 63% 15%;
+    --eval-fail-mark: 0 91% 71%;
+    --eval-warn-fg: 43 96% 56%;
+    --eval-warn-bg: 21 92% 14%;
+    --eval-warn-mark: 43 96% 56%;
+    --eval-running-fg: 198 93% 60%;
+    --eval-running-bg: 204 80% 16%;
+    --eval-running-mark: 198 93% 60%;
+
+    --diff-del-fg: 353 96% 82%;
+    --diff-del-bg: 343 88% 16%;
+    --diff-add-fg: 142 72% 73%;
+    --diff-add-bg: 145 80% 10%;
+
+    --chart-1: 213 77% 56%;
+    --chart-2: 17 70% 50%;
+    --chart-3: 159 73% 36%;
+    --chart-4: 40 100% 39%;
+    --chart-5: 338 61% 58%;
+    --chart-baseline: 215 20% 65%;
+    --chart-grid: 215 25% 27%;
+    --chart-axis: 215 25% 35%;
+
+    --shadow-overlay: 0 8px 24px rgb(0 0 0 / 0.40);
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family:
+      -apple-system, BlinkMacSystemFont, Inter, 'PingFang SC', 'Hiragino Sans GB',
+      'Microsoft YaHei', sans-serif;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  /* `:focus-visible` 永不移除（DESIGN §8）。 */
+  :focus-visible {
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
+  }
+}
+
+@layer utilities {
+  /* 数字对齐铁律（DESIGN §3.2）：全局强制，含指标卡。 */
+  .num {
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  .num-mono {
+    font-family: 'JetBrains Mono', 'Fira Code', SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums slashed-zero;
+  }
+
+  /* 表格超长文本：单行截断（DESIGN §6.1）。 */
+  .cell-truncate {
+    @apply truncate;
+  }
+}
+
+/*
+ * 动效预算（DESIGN §6.2）：全站只有 Sheet 滑入 + eval 呼吸脉冲。
+ * `prefers-reduced-motion: reduce` 下全部归零 —— 这条是无障碍硬要求，不是可选项。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

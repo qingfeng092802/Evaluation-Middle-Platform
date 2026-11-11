@@ -141,6 +141,14 @@ export const Dataset = z.object({
   latestVersionNo: z.number().int().min(0).nullable(),
   /** 最新版本的条目数；尚无版本时为 null。 */
   caseCount: z.number().int().min(0).nullable(),
+  /**
+   * 最新版本的来源；尚无版本时为 null。
+   *
+   * 与 `latestVersionNo` / `caseCount` 同属「列表页展示用聚合值」：
+   * `PG-05` 列表要显示「来源」列，而来源存在**版本**上（`dataset_versions.source`）。
+   * 不让前端拿不到就去猜一个默认值——猜出来的「导入」会在回流数据上直接说谎。
+   */
+  latestSource: DatasetSource.nullable(),
 });
 export type Dataset = z.infer<typeof Dataset>;
 
