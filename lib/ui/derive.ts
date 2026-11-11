@@ -187,3 +187,66 @@ export function blockerText(
       return EMPTY_STATES.blockedNoRetrieval;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 占位页（`SPEC-M1` §6.5 `T-3`，需求方 2026-11-10「方案 A」裁定）
+// ---------------------------------------------------------------------------
+
+/** 占位页的键。每个键对应 `pages-and-flows.md` 里一个**不在 M1** 的页面。 */
+export type PlaceholderKey = 'pg07' | 'pg08' | 'pg09';
+
+export interface PlaceholderNotice {
+  /** 需求文档里的页面编号，用户能对上 `pages-and-flows.md`。 */
+  readonly pageId: string;
+  /** 页面名，与侧栏 / 需求文档一致。 */
+  readonly title: string;
+  /** 里程碑归属。`pg09` 是两段（M2 模型网关 Tab / M4 门禁规则 Tab），故为字符串。 */
+  readonly milestone: string;
+  /** 主文案。必须含「上线」二字，说清是「还没到」而不是「坏了」。 */
+  readonly message: string;
+  /** 为什么 M1 不做 —— 一句实话，避免用户以为是遗漏。 */
+  readonly reason: string;
+  /** 现在能去哪里做类似的事（不留死胡同）。 */
+  readonly fallback: { readonly label: string; readonly href: string };
+}
+
+/**
+ * 三个占位页的原文。
+ *
+ * ⚠️ `milestone` 的取值**逐条对齐** `SPEC-M1` §1.1 与「M1 → M2 拆除清单」：
+ * `PG-08` → M3、`PG-07` → M4、`PG-09` → M2（模型网关）/ M4（门禁规则）。
+ * 改这里等于改对用户的承诺，先改 SPEC。
+ */
+export const PLACEHOLDER_NOTICES: Readonly<Record<PlaceholderKey, PlaceholderNotice>> = {
+  pg08: {
+    pageId: 'PG-08',
+    title: '报告对比',
+    milestone: 'M3',
+    message: '报告对比功能将在 M3 上线。',
+    reason:
+      '双版本对比依赖「已确认基线」，基线确认与门禁裁决在 M3 随 US-009 / US-020 一起交付；当前 Milestone 1 没有对比接口。',
+    fallback: { label: '回到评测运行台', href: '/runs' },
+  },
+  pg07: {
+    pageId: 'PG-07',
+    title: '算子库',
+    milestone: 'M4',
+    message: '独立算子库页面将在 M4 上线。',
+    reason:
+      'M1 的六个内置确定性算子直接内联在「发起评测」第 3 步里配置，不需要独立页面；全局模板库属 US-016，排在 M4。',
+    fallback: { label: '去发起评测（第 3 步配置算子）', href: '/runs/new' },
+  },
+  pg09: {
+    pageId: 'PG-09',
+    title: '管理配置',
+    milestone: 'M2 / M4',
+    message: '管理配置页将在 M2 / M4 分阶段上线。',
+    reason:
+      '模型网关配置 Tab 属 M2（M1 只用本地 fixture 网关，配置界面此刻是假功能）；门禁规则、基线确认、推送渠道三个 Tab 属 M4。',
+    fallback: { label: '回到评测运行台', href: '/runs' },
+  },
+};
+
+export function placeholderNotice(key: PlaceholderKey): PlaceholderNotice {
+  return PLACEHOLDER_NOTICES[key];
+}

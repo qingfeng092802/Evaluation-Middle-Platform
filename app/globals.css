@@ -13,6 +13,7 @@
     --background: 210 40% 98%;
     --foreground: 222 47% 11%;
     --body-foreground: 215 25% 27%;
+    --foreground-subtle: 215 19% 35%;
     --card: 0 0% 100%;
     --card-foreground: 222 47% 11%;
     --muted: 210 40% 96%;
@@ -58,6 +59,7 @@
     --background: 222 47% 11%;
     --foreground: 210 40% 98%;
     --body-foreground: 215 20% 65%;
+    --foreground-subtle: 215 17% 60%;
     --card: 217 33% 17%;
     --card-foreground: 210 40% 98%;
     --muted: 217 33% 17%;

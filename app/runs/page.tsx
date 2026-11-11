@@ -7,111 +7,27 @@ import { EvalRunListResponse } from '@eval-platform/contracts';
 import type { EvalRun } from '@eval-platform/contracts';
 import { AppShellWithTheme } from '@/components/shell/app-shell';
 import { Button } from '@/components/ui/button';
-import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
-import { StatusBadge } from '@/components/ui/status-badge';
+import { DataTable } from '@/components/ui/data-table';
+import { runsTableColumns } from '@/components/runs/runs-table-columns';
 import { useApi } from '@/lib/ui/use-api';
-import { formatTimestamp, formatTokens } from '@/lib/format';
-import {
-  runCostLabel,
-  runDurationLabel,
-  runScoreLabel,
-} from '@/lib/ui/runs';
 import { ProviderBanner } from '@/components/shell/provider-banner';
 
 /**
  * `PG-01` · 评测运行台。
  *
- * 列表列严格按 `pages-and-flows.md` PG-01 区域 3：
- * `评测名称 ｜ 状态 ｜ 综合得分 ｜ 耗时 ｜ Token 成本 ｜ 发起人 ｜ 发起时间 ｜ 操作`。
+ * 三块内容，对应 `SPEC-M1` `[FE-03]` 交付物 1：
+ *  1. **前置横幅** `<ProviderBanner />` —— 只在未配凭证时出现（M1 种子自带
+ *     `is_active=true` 的 fixture provider，正常演示不显示）；
+ *  2. **列表** —— 列定义在 `components/runs/runs-table-columns.tsx`，
+ *     那里逐列对着 SPEC 原文，并被渲染级测试锁死；
+ *  3. **空状态** —— 由 `DataTable` 的 `emptyKey="runs"` 提供，文案与出口取自
+ *     `pages-and-flows.md` §5 原文。
  *
- * 所有数字列声明 `numeric: true` ⇒ 右对齐 + `.num`（`DESIGN.md` §3.2），
- * 不靠调用方逐个记着写类名。
+ * **M1 不加 KPI 行**（`SPEC-M1` §6.5 `T-1`，2026-11-10 裁定）：
+ * 门禁通过率等指标依赖 `gate_evaluations`，该表此刻为空，凭空造数就是假数据。
  */
 export default function RunsPage(): React.ReactElement {
   const runs = useApi(EvalRunListResponse, '/api/runs?limit=50');
-
-  const columns = React.useMemo<readonly DataTableColumn<RunRow>[]>(
-    () => [
-      {
-        id: 'name',
-        header: '评测名称',
-        cell: (r) => (
-          <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">{r.name}</div>
-            <div className="truncate text-2xs text-muted-foreground">
-              {r.datasetLabel} · {r.targetLabel}
-            </div>
-          </div>
-        ),
-        sortValue: (r) => r.name,
-      },
-      {
-        id: 'status',
-        header: '状态',
-        cell: (r) => <StatusBadge status={r.status} />,
-        sortValue: (r) => r.status,
-      },
-      {
-        id: 'score',
-        header: '综合得分',
-        numeric: true,
-        cell: (r) => runScoreLabel(r),
-        sortValue: (r) => r.metrics.scoreOverall,
-      },
-      {
-        id: 'duration',
-        header: '耗时',
-        numeric: true,
-        cell: (r) => runDurationLabel(r),
-        sortValue: (r) =>
-          r.startedAt === null || r.finishedAt === null
-            ? null
-            : Date.parse(r.finishedAt) - Date.parse(r.startedAt),
-      },
-      {
-        id: 'tokens',
-        header: 'Token',
-        numeric: true,
-        cell: (r) => formatTokens(r.metrics.tokensInTotal + r.metrics.tokensOutTotal),
-        sortValue: (r) => r.metrics.tokensInTotal + r.metrics.tokensOutTotal,
-      },
-      {
-        id: 'cost',
-        header: 'Token 成本',
-        numeric: true,
-        cell: (r) => runCostLabel(r),
-        sortValue: (r) => r.metrics.costTotal,
-      },
-      {
-        id: 'createdBy',
-        header: '发起人',
-        cell: (r) => <span className="text-body">{r.createdBy}</span>,
-        sortValue: (r) => r.createdBy,
-      },
-      {
-        id: 'createdAt',
-        header: '发起时间',
-        numeric: true,
-        cell: (r) => <span className="num-mono">{formatTimestamp(r.createdAt)}</span>,
-        sortValue: (r) => r.createdAt,
-      },
-      {
-        id: 'actions',
-        header: '操作',
-        cell: (r) => (
-          <Link
-            href={`/runs/${r.id}`}
-            className="text-primary underline-offset-4 hover:underline"
-            onClick={(e) => e.stopPropagation()}
-          >
-            查看报告
-          </Link>
-        ),
-        srOnlyHeader: '（打开该次运行的报告）',
-      },
-    ],
-    [],
-  );
 
   return (
     <AppShellWithTheme
@@ -135,8 +51,8 @@ export default function RunsPage(): React.ReactElement {
           </div>
         ) : null}
 
-        <DataTable<RunRow>
-          columns={columns}
+        <DataTable<EvalRun>
+          columns={runsTableColumns}
           rows={runs.data?.items ?? []}
           getRowId={(r) => r.id}
           loading={runs.loading}
@@ -148,6 +64,3 @@ export default function RunsPage(): React.ReactElement {
     </AppShellWithTheme>
   );
 }
-
-/** 行类型即契约里的 `EvalRun`（`EvalRunListResponse.items` 的元素）。 */
-type RunRow = EvalRun;

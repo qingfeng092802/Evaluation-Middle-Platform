@@ -68,6 +68,22 @@ export default function RunDetailPage(): React.ReactElement {
   const [order, setOrder] = React.useState<'asc' | 'desc'>('asc');
   const [openCaseKey, setOpenCaseKey] = React.useState<string | null>(null);
 
+  /**
+   * 打开抽屉的那个元素。
+   *
+   * 抽屉是**受控**的（`open={openCaseKey !== null}`），又没有 `SheetTrigger`
+   * ——Radix 关抽屉时只知道「归还给 Trigger」，而 Trigger 不存在，焦点就掉到
+   * `<body>` 上：`Esc` 之后键盘用户丢失位置（真浏览器实测暴露）。
+   * 把触发元素记下来，在 `onCloseAutoFocus` 里自己还回去。
+   */
+  const openerRef = React.useRef<HTMLElement | null>(null);
+
+  const openCase = React.useCallback((caseKey: string): void => {
+    const active = document.activeElement;
+    openerRef.current = active instanceof HTMLElement ? active : null;
+    setOpenCaseKey(caseKey);
+  }, []);
+
   const run = useApi(EvalRunDetail, runId === '' ? null : `/api/runs/${runId}`);
   const cases = useApi(
     EvalCaseResultListResponse,
@@ -75,6 +91,83 @@ export default function RunDetailPage(): React.ReactElement {
       ? null
       : `/api/runs/${runId}/cases?limit=200&sortBy=score&order=${order}`,
   );
+
+  /**
+   * 当前明细表顺序下的 case key 列表（`J`/`K` 的导航依据）。
+   *
+   * 取的是**表格此刻的渲染顺序**，不是接口返回的原始顺序：用户按了「降序」之后，
+   * `J` 的「下一条」必须是视觉上的下一条，否则按一下就跳到表格的另一头。
+   */
+  const caseKeys = React.useMemo<readonly string[]>(
+    () => (cases.data?.items ?? []).map((c) => c.caseKey),
+    [cases.data],
+  );
+
+  /**
+   * 抽屉的 DOM 容器。
+   *
+   * `J`/`K` 的监听**必须挂在这个容器上**，不能挂 `window`（`DESIGN.md` §4.3）：
+   * 挂 `window` 的话，抽屉关掉之后监听还在，用户在别处（甚至别的页面）按 `j`
+   * 都会触发一次导航。挂在容器上，抽屉卸载 ⇒ 监听自然消失，不必依赖
+   * 「记得在关闭时 removeListener」这种容易漏的写法。
+   *
+   * 用 **state 而不是 ref** 持有节点：Radix 的 Portal 内容是在 open 之后才挂载的，
+   * 用 ref 时 effect 首次运行读到 `null`，而 ref 赋值**不触发重渲染**，
+   * effect 就再也不会重跑 —— 监听器永远挂不上，且失败是静默的
+   * （按 `J` 没反应，没有任何报错）。改成 callback ref 存进 state，
+   * 节点到位时 setState 带来一次重渲染，effect 才会真正绑定。
+   */
+  const [sheetEl, setSheetEl] = React.useState<HTMLDivElement | null>(null);
+
+  /** 上一条（`K`）/ 下一条（`J`）。循环：到头回绕，与原型 `navigateDrawerCase` 一致。 */
+  const stepCase = React.useCallback(
+    (delta: -1 | 1): void => {
+      if (caseKeys.length === 0) return;
+      setOpenCaseKey((current) => {
+        if (current === null) return current;
+        const at = caseKeys.indexOf(current);
+        // 当前 key 不在列表里（理论上不该发生：切换排序后 list 变了，key 还在）
+        // ⇒ 从头部开始，而不是静默不动。
+        if (at === -1) return caseKeys[delta === 1 ? 0 : caseKeys.length - 1] ?? current;
+        const next = (at + delta + caseKeys.length) % caseKeys.length;
+        return caseKeys[next] ?? current;
+      });
+    },
+    [caseKeys],
+  );
+
+  /**
+   * `J` 下一条 / `K` 上一条。`Esc` 交给 Radix 自己处理（它的优先级最高，
+   * 在这里拦反而会盖掉 Radix 的「关闭 + 焦点归还」）。
+   *
+   * **作用域排除**：焦点落在可输入元素里时一律不拦截（`DESIGN.md` §4.3 明确
+   * 点名 `input` / `textarea` / `[contenteditable]` / `select`）。否则用户在
+   * 筛选框里打字母 `j`、`k` 会被吞掉 —— 这是「快捷键做好事、把输入废掉」的典型。
+   * 排除集用 `closest()` 判断，因为焦点可能落在可输入元素内部的子节点上。
+   */
+  React.useEffect(() => {
+    if (sheetEl === null || openCaseKey === null) return;
+
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key !== 'j' && e.key !== 'J' && e.key !== 'k' && e.key !== 'K') return;
+      // 组合键不抢：`Ctrl+J` / `Cmd+K` 属于浏览器或系统。
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+      const target = e.target;
+      if (
+        target instanceof HTMLElement &&
+        target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]') !== null
+      ) {
+        return;
+      }
+
+      e.preventDefault();
+      stepCase(e.key === 'j' || e.key === 'J' ? 1 : -1);
+    };
+
+    sheetEl.addEventListener('keydown', onKeyDown);
+    return () => sheetEl.removeEventListener('keydown', onKeyDown);
+  }, [sheetEl, openCaseKey, stepCase]);
 
   // 只有还在跑的两个状态才轮询；终态之后数据不会再变，继续打接口纯属浪费。
   const live = run.data !== null && shouldPoll(run.data.status, false, true);
@@ -155,7 +248,7 @@ export default function RunDetailPage(): React.ReactElement {
             className="text-primary underline-offset-4 hover:underline"
             onClick={(e) => {
               e.stopPropagation();
-              setOpenCaseKey(r.caseKey);
+              openCase(r.caseKey);
             }}
           >
             查看
@@ -164,7 +257,7 @@ export default function RunDetailPage(): React.ReactElement {
         srOnlyHeader: '（打开该条 Case 的诊断抽屉）',
       },
     ],
-    [],
+    [openCase],
   );
 
   if (run.loading) {
@@ -303,7 +396,7 @@ export default function RunDetailPage(): React.ReactElement {
           getRowId={(r) => r.id}
           loading={cases.loading}
           refreshing={cases.refreshing}
-          onRowClick={(r) => setOpenCaseKey(r.caseKey)}
+          onRowClick={(r) => openCase(r.caseKey)}
           rowAriaLabel={(r) => `Case ${r.caseKey}，状态${caseStatusLabel(r.status)}`}
         />
 
@@ -315,9 +408,23 @@ export default function RunDetailPage(): React.ReactElement {
             if (!next) setOpenCaseKey(null);
           }}
         >
-          <SheetContent width="default">
+          <SheetContent
+            ref={setSheetEl}
+            width="default"
+            // 受控且无 Trigger ⇒ 自己把焦点还给打开抽屉的那个元素。
+            onCloseAutoFocus={(e) => {
+              e.preventDefault();
+              openerRef.current?.focus();
+            }}
+          >
             {openCaseKey === null ? null : (
-              <CaseInspector runId={runId} caseKey={openCaseKey} />
+              <CaseInspector
+                runId={runId}
+                caseKey={openCaseKey}
+                // 只有一条时上/下一条按钮没有意义（点哪都是自己）。
+                onPrev={caseKeys.length > 1 ? () => stepCase(-1) : null}
+                onNext={caseKeys.length > 1 ? () => stepCase(1) : null}
+              />
             )}
           </SheetContent>
         </Sheet>
@@ -421,9 +528,14 @@ function CaseStatusBadge({
 function CaseInspector({
   runId,
   caseKey,
+  onPrev,
+  onNext,
 }: {
   runId: string;
   caseKey: string;
+  /** `null` ⇒ 只有一条 case，不给可点而无反应的按钮。 */
+  onPrev: (() => void) | null;
+  onNext: (() => void) | null;
 }): React.ReactElement {
   const detail = useApi(
     CaseDetailResponse,
@@ -442,6 +554,40 @@ function CaseInspector({
         <SheetDescription>
           单条 Case 全貌。本页只读：无改判、无回流。
         </SheetDescription>
+
+        {/*
+          `DESIGN.md` §4.3 固定头：上一条 / 下一条 + 关闭。
+          - 按钮的 `title` 里写明快捷键，用户不必先知道 `J`/`K` 才能发现它们；
+          - 快捷键本身由 `SheetContent` 容器上的 `keydown` 监听处理（不是 `window`）；
+          - 只有一条 case 时 `onPrev`/`onNext` 为 `null`，按钮不渲染 ——
+            「点了没反应」比「没有按钮」更糟。
+        */}
+        {onPrev === null && onNext === null ? null : (
+          <div className="ml-auto flex items-center gap-1">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onPrev ?? undefined}
+              disabled={onPrev === null}
+              title="上一条 (快捷键 K)"
+              data-case-nav="prev"
+            >
+              上一条
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onNext ?? undefined}
+              disabled={onNext === null}
+              title="下一条 (快捷键 J)"
+              data-case-nav="next"
+            >
+              下一条
+            </Button>
+          </div>
+        )}
       </SheetHeader>
 
       <SheetBody className="flex flex-col gap-5">

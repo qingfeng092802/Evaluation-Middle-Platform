@@ -368,3 +368,39 @@ export async function isCancelRequested(runId: string): Promise<boolean> {
   );
   return !!row?.cancel_requested_at;
 }
+
+/**
+ * 运行中增量刷新计数字段（`PG-03` 区域 3）。
+ *
+ * 为什么要单独一条 SQL 而不是等 `finalizeRun`：`finalizeRun` 只在终态执行一次，
+ * 在那之前 `succeeded_cases` 恒为 0 —— 真浏览器验收里进度条一直停在
+ * 「已完成 0 / 50」，而明细表已经完成了 11 条（`#1` 截图证据）。
+ * 进度条的全部意义就是**跑的时候**看得见进度。
+ *
+ * 为什么 `WHERE status = 'RUNNING'`：终态行被 UPDATE 会触发 `eval_runs_guard`
+ * 抛「row is frozen」。加上这个条件后，与 `finalizeRun` 竞态时本条只会影响 0 行，
+ * 不会把一次正常收尾变成错误日志（与 `touchHeartbeat` 同一处理方式，#6）。
+ *
+ * 计数口径与 `finalizeRun` 一致，直接由 `eval_case_results` 聚合，
+ * 不在这里做 Node 侧累加（`OPEN-3`：禁止 Node 浮点/计数累加导致口径漂移）。
+ */
+export async function refreshRunProgress(runId: string): Promise<void> {
+  await query(
+    `UPDATE eval_runs r
+        SET succeeded_cases = s.succeeded,
+            failed_cases    = s.failed,
+            skipped_cases   = s.skipped
+       FROM (
+         -- 口径与 finalizeRun 的聚合逐字一致：failed 是 <> 'OK'，
+         -- 也就是把 SKIPPED 也计入。两边口径不同会让进度条在收尾瞬间
+         -- 出现「失败 2 → 失败 5」的跳变。
+         SELECT count(*) FILTER (WHERE status = 'OK')      AS succeeded,
+                count(*) FILTER (WHERE status <> 'OK')     AS failed,
+                count(*) FILTER (WHERE status = 'SKIPPED') AS skipped
+           FROM eval_case_results
+          WHERE eval_run_id = $1
+       ) s
+      WHERE r.id = $1 AND r.status = 'RUNNING'`,
+    [runId],
+  );
+}

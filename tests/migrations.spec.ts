@@ -10,6 +10,7 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import type { Client } from 'pg';
 import { connect, dropAndRecreateSchema, migrate, resetDatabase } from '../db/migrate.js';
+import { restoreSeed } from './support/fixtures.js';
 import {
   DB_FUNCTION_NAMES,
   EXPECTED_TRIGGER_COUNT,
@@ -102,6 +103,10 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await client.end();
+  // `B-07`/`B-08`：不收尾就会把夹具行留在库里（数据集声明 1 条样本、实际 0 行）。
+  // 这几个 helper 造的厂商还缺 base_url —— 它们都属于「声明与实际不符」，
+  // 统一还原成种子状态，下一个 spec / 人工复核看到的是可预期的库。
+  await restoreSeed(process.env['DATABASE_URL']).catch(() => undefined);
 });
 
 beforeEach(async () => {

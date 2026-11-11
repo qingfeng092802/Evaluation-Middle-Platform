@@ -8,34 +8,6 @@
 
 ---
 
-## ⚠️ 编译状态声明（重要）
-
-**本目录的代码在本轮【未执行编译验证】**。
-
-原因（如实记录，不掩盖）：
-
-1. 本会话 **Context7 MCP 未挂载**（需重启会话加载 `.mcp.json`）；
-2. `WebFetch` 与 `npm view` **被 auto mode 安全分类器拦截**（`deepseek-flash` 限流）；
-3. `src/contracts/node_modules` **不存在**：`package.json` / `tsconfig.json` 已就位，
-   但本轮多次执行 `npm install` / `npm run typecheck` 均被同一个分类器拦截，
-   因此 `tsc --noEmit` 从未真正跑过。
-
-`openapi.yaml` 同样**未经任何 YAML / OpenAPI 校验器解析**。
-
-因此下列 API 细节**未经在线核验**，属 **Step 10 写代码前第一件事**（见
-`docs/facts/technical-solution.md` §5「待核验清单」）：
-
-| 依赖 | 待核验点 |
-|---|---|
-| `zod` | 当前主版本（v3 / v4）；`z.string().uuid()` 是否已改为 `z.uuid()`；`z.discriminatedUnion` 签名 |
-| `typescript` | `verbatimModuleSyntax` / `moduleResolution: bundler` 组合 |
-
-> **本目录刻意使用 Zod v3 / v4 双兼容的语法子集**（`z.object` / `z.string().uuid()` /
-> `z.enum` / `z.discriminatedUnion` / `z.infer`），以降低版本切换成本。
-> 但「双兼容」不等于「已验证」——**Step 10 必须实跑 `tsc --noEmit` 与 `vitest` 后，才能把本声明删除。**
-
----
-
 ## 文件结构
 
 ```
@@ -108,5 +80,3 @@ cd src/contracts
 npm install
 npm run typecheck    # tsc --noEmit
 ```
-
-**在 Step 10 通过 typecheck 之前，任何业务代码不得依赖本目录的导出。**

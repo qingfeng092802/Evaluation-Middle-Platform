@@ -18,50 +18,12 @@ import { afterAll, beforeEach, describe, expect, it } from 'vitest';
 import { connect, dropAndRecreateSchema, migrate, resetDatabase } from '../db/migrate.js';
 import { claimNextRun } from '../db/repo/queue.js';
 import { closeDb, getPool } from '../db/schema/index.js';
+import { insertPendingRun, restoreSeed } from './support/fixtures.js';
 
 const DB_URL = process.env['DATABASE_URL'];
 
 async function sql(text: string, params: unknown[] = []): Promise<void> {
   await getPool().query(text, params);
-}
-
-async function oneId(text: string, params: unknown[] = []): Promise<string> {
-  const res = await getPool().query<{ id: string }>(text, params);
-  const row = res.rows[0];
-  if (!row) throw new Error(`期望返回一行：${text}`);
-  return row.id;
-}
-
-/** 最小可领取的图：数据集版本 → 目标版本 → 一条 PENDING run。 */
-async function insertPendingRun(name: string): Promise<string> {
-  const ds = await oneId(`INSERT INTO datasets (name, owner_id) VALUES ($1, 't') RETURNING id`, [name]);
-  const dv = await oneId(
-    `INSERT INTO dataset_versions (dataset_id, version_no, case_count, content_hash, source, created_by)
-     VALUES ($1, 1, 1, 'sha256:abc', 'import', 't') RETURNING id`,
-    [ds],
-  );
-  const mp = await oneId(
-    `INSERT INTO model_providers (name, kind, api_key_ciphertext, api_key_masked)
-     VALUES ($1, 'openai_compatible', 'fixture-noop', 'fixture-••••noop') RETURNING id`,
-    [`mp-${name}`],
-  );
-  const tg = await oneId(
-    `INSERT INTO targets (name, kind, owner_id) VALUES ($1, 't1_prompt', 't') RETURNING id`,
-    [`tg-${name}`],
-  );
-  const tv = await oneId(
-    `INSERT INTO target_versions
-       (target_id, version_no, kind, model_provider_id, model_id, prompt_template, temperature, max_tokens, created_by)
-     VALUES ($1, 1, 't1_prompt', $2, 'fixture-echo-1', '{{input}}', 0, 64, 't') RETURNING id`,
-    [tg, mp],
-  );
-  return oneId(
-    `INSERT INTO eval_runs
-       (name, dataset_version_id, target_version_id, concurrency, config_snapshot, reproducibility,
-        runner_version, created_by, total_cases, status)
-     VALUES ($1, $2, $3, 4, '{}'::jsonb, '{}'::jsonb, 'test', 't', 1, 'PENDING') RETURNING id`,
-    [`run-${name}`, dv, tv],
-  );
 }
 
 beforeEach(async () => {
@@ -70,7 +32,19 @@ beforeEach(async () => {
   await resetDatabase(DB_URL);
 });
 
+/**
+ * 收尾复原种子（`B-07`/`B-08`）。
+ *
+ * 这条 spec 每个用例前都会 `DROP SCHEMA`，跑完库里只剩最后一个用例造的夹具行：
+ * 数据集「显示 1 条样本、实际 0 行」、Target「指向 v0、却挂着 v1」、
+ * 厂商 `base_url` 为 NULL。以前这里只关连接池就撒手，残渣就这么留到了
+ * 下一次人工点页面（正是 `B-07`/`B-08` 的现场）。
+ *
+ * 现在收尾把库**还原成只有种子的状态**：下一个 spec 起来看到的库是可预期的。
+ */
 afterAll(async () => {
+  await closeDb();
+  await restoreSeed(DB_URL);
   await closeDb();
   // 供将来接入其它真库 spec 时确认连接确实关掉了
   await connect(DB_URL)
@@ -90,7 +64,7 @@ describe('claim_next_run · 空队列必须返回 null', () => {
   });
 
   it('有一条 PENDING 时领取成功，并把状态推到 RUNNING', async () => {
-    const runId = await insertPendingRun('a');
+    const { runId } = await insertPendingRun('a');
     const claimed = await claimNextRun();
     expect(claimed).not.toBeNull();
     expect(claimed?.id).toBe(runId);
@@ -116,7 +90,7 @@ describe('claim_next_run · 空队列必须返回 null', () => {
     await sql(
       `UPDATE eval_runs SET created_at = now() - interval '1 minute' WHERE name = 'run-first'`,
     );
-    const second = await insertPendingRun('second');
+    const second = (await insertPendingRun('second')).runId;
 
     const firstClaimed = await claimNextRun();
     expect(firstClaimed?.id).not.toBeNull();

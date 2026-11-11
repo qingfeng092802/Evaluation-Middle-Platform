@@ -12,18 +12,16 @@ import type { Dataset, DatasetVersion } from '@eval-platform/contracts';
 import { AppShellWithTheme } from '@/components/shell/app-shell';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DataTable, type DataTableColumn } from '@/components/ui/data-table';
+import { DataTable } from '@/components/ui/data-table';
+import { datasetsTableColumns } from '@/components/datasets/datasets-table-columns';
 import { Input, Label, Select, Textarea } from '@/components/ui/input';
 import { apiPost } from '@/lib/ui/client';
 import { useApi } from '@/lib/ui/use-api';
 import { formatTimestamp, truncateHash } from '@/lib/format';
 import {
-  caseCountCell,
-  datasetSourceLabel,
   importBlockedReason,
   importCanCommit,
   inferFormat,
-  versionCell,
   versionFrozenNotice,
 } from '@/lib/ui/datasets';
 import { importIssueLine, importSummary } from '@/lib/ui/runs';
@@ -34,6 +32,10 @@ import { importIssueLine, importSummary } from '@/lib/ui/runs';
  * 四块按 `pages-and-flows.md` PG-05 的区域顺序排：标题栏 → 列表 →
  * 上传面板（校验结果区）→ 版本历史（**内联展开**预览，不跳页、不弹窗）。
  *
+ * 列表列定义在 `components/datasets/datasets-table-columns.tsx`，
+ * 那里逐列对着 `[FE-02]` 交付物 1 的原文，并被 `tests/datasets-render-parity.spec.ts`
+ * 用真实 `<DataTable>` 渲染后逐字断言。
+ *
  * 「明确不做」的两件事在这里体现为**代码里没有**：
  * 没有删除版本、没有导出 JSONL。不是藏起来，是根本不实现。
  */
@@ -41,68 +43,12 @@ export default function DatasetsPage(): React.ReactElement {
   const datasets = useApi(DatasetListResponse, '/api/datasets?limit=50');
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
 
-  const columns = React.useMemo<readonly DataTableColumn<Dataset>[]>(
-    () => [
-      {
-        id: 'name',
-        header: '名称',
-        cell: (d) => (
-          <div className="min-w-0">
-            <div className="truncate font-medium text-foreground">{d.name}</div>
-            {d.description === null ? null : (
-              <div className="truncate text-2xs text-muted-foreground">{d.description}</div>
-            )}
-          </div>
-        ),
-        sortValue: (d) => d.name,
-      },
-      {
-        id: 'latestVersion',
-        header: '最新版本',
-        numeric: true,
-        cell: (d) => versionCell(d.latestVersionNo),
-        sortValue: (d) => d.latestVersionNo,
-      },
-      {
-        id: 'caseCount',
-        header: '条目数',
-        numeric: true,
-        cell: (d) => caseCountCell(d.caseCount),
-        sortValue: (d) => d.caseCount,
-      },
-      {
-        id: 'source',
-        header: '来源',
-        // 来源存在版本上，接口已聚合为 `latestSource`；无版本时为 null。
-        cell: (d) => datasetSourceLabel(d.latestSource),
-        sortValue: (d) => d.latestSource,
-      },
-      {
-        id: 'updatedAt',
-        header: '最近更新',
-        numeric: true,
-        cell: (d) => <span className="num-mono">{formatTimestamp(d.updatedAt)}</span>,
-        sortValue: (d) => d.updatedAt,
-      },
-      {
-        id: 'actions',
-        header: '操作',
-        cell: (d) => (
-          <button
-            type="button"
-            className="text-primary underline-offset-4 hover:underline"
-            aria-expanded={expandedId === d.id}
-            onClick={(e) => {
-              e.stopPropagation();
-              setExpandedId((cur) => (cur === d.id ? null : d.id));
-            }}
-          >
-            查看版本
-          </button>
-        ),
-        srOnlyHeader: '（展开该评测集的版本历史）',
-      },
-    ],
+  const columns = React.useMemo(
+    () =>
+      datasetsTableColumns({
+        expandedId,
+        onToggle: (id) => setExpandedId((cur) => (cur === id ? null : id)),
+      }),
     [expandedId],
   );
 

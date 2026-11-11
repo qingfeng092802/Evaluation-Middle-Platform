@@ -75,6 +75,11 @@ export const evalRuns = pgTable(
     startedAt: timestamp('started_at', { withTimezone: true }),
     finishedAt: timestamp('finished_at', { withTimezone: true }),
     cancelRequestedAt: timestamp('cancel_requested_at', { withTimezone: true }),
+    /**
+     * 租约心跳（#6 方案 A）。worker 处理期间按 `TTL / 3` 续写；
+     * NULL 表示尚未心跳，回收判定回退到 `started_at`。
+     */
+    heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
   },
   (t) => ({
     ckStatus: check(

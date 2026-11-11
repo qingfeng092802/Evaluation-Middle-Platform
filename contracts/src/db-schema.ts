@@ -74,6 +74,11 @@ export const MIGRATION_ORDER: ReadonlyArray<{
 export const CROSS_CUTTING_MIGRATIONS = [
   { no: 16, file: '0016_immutability_triggers.sql', purpose: 'immutable table triggers' },
   { no: 17, file: '0017_queue_functions.sql', purpose: 'claim_next_run / reclaim_stale_runs' },
+  {
+    no: 18,
+    file: '0018_heartbeat_lease.sql',
+    purpose: 'heartbeat lease column / reclaim predicate (GREATEST)',
+  },
 ] as const;
 
 /**

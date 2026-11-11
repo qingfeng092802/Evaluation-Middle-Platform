@@ -23,6 +23,7 @@ import type { ChildProcess } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from 'pg';
+import { detectMixedArtifacts, readFingerprint, type ArtifactIssue } from './check-next-artifacts.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 /** `src/` 绝对路径（本文件位于 `src/scripts/`）。 */
@@ -128,6 +129,58 @@ export function dbWaitTarget(url: string): {
     port: u.port === '' ? 5432 : Number(u.port),
     database: decodeURIComponent(u.pathname.replace(/^\//, '')),
   };
+}
+
+/**
+ * 起 `next dev` 之前检查 `.next`（`B-01`/`B-02` 复盘）。
+ *
+ * 为什么 `dev:all` 也要查：它是全栈入口，且**直接**起 `next dev`。如果 `.next`
+ * 里还留着上次 `next build` 的生产产物，dev 启动后两套 chunk 命名规则并存，
+ * 客户端关键资源 404、页面不水合 —— 表现为「接口有数据但表格是空的」，
+ * 排查时会被误当成接口或组件 bug（2026-11-09 独立验收就是这么被拖偏的）。
+ *
+ * 比 `check-next-artifacts`（构建前门禁）**多一条**：
+ * 光有 `BUILD_ID`、还没有 dev 产物时，`next build` 侧是正常状态，但 `next dev`
+ * 侧就是即将发生的事故 —— 事故时间线证明 dev **不删** `BUILD_ID`
+ * （18:34 写下的那个文件在 19:09 dev 起来后仍在），于是 dev 一启动就混。
+ * 这条规则只属于 dev 入口，所以放在这里而不是公共判定里。
+ *
+ * 只拦不删：在活着的 dev server 底下删 `.next` 会把 dev 一起弄坏。
+ * 清理是人的动作（先停进程，再 `npm run clean:next`）。
+ */
+export function preflightArtifacts(nextDir: string): readonly ArtifactIssue[] {
+  const fingerprint = readFingerprint(nextDir);
+  const issues: ArtifactIssue[] = [...detectMixedArtifacts(fingerprint)];
+
+  if (fingerprint.hasBuildId && !fingerprint.hasDevStatic) {
+    issues.push({
+      code: 'PROD_ARTIFACTS_PRESENT',
+      message:
+        `.next 里有上次 next build 的 BUILD_ID，而 next dev 不会清掉它 —— ` +
+        `dev 启动后会与生产 chunk 命名混用，客户端资源 404、页面不水合。` +
+        '请先执行 `npm run clean:next`，再启动。',
+    });
+  }
+
+  return issues;
+}
+
+/**
+ * `dev:all` 的库必须是 **dev 库**，不能是测试库（`B-03`/`B-04`）。
+ *
+ * 测试库隔离是双向的：测试侧（`tests/setup/test-env.ts`）保证测试不去碰 dev 库，
+ * 这里保证常驻 worker 不去碰测试库。少任一边，事故都会重演 —— 只是方向反过来。
+ * 典型误用：开发机上为了「干净」把 `DATABASE_URL` 设成 `..._test` 再起 `dev:all`，
+ * 于是常驻 worker 和正在跑的全量测试抢同一个队列，症状与 2026-11-09 一模一样。
+ */
+export function assertDevDatabase(url: string): void {
+  const name = decodeURIComponent(new URL(url).pathname.replace(/^\//, ''));
+  if (name.endsWith('_test')) {
+    throw new Error(
+      `dev:all 连到了测试库 ${name}。常驻 worker 会与正在跑的全量测试抢同一个队列，` +
+        '造成 H-10/H-11 随机失败。请把 DATABASE_URL 指回 dev 库（默认 eval_platform）。',
+    );
+  }
 }
 
 function log(name: string, msg: string): void {
@@ -262,6 +315,18 @@ async function main(): Promise<void> {
   if (appPort === fixturePort) {
     throw new Error(`PORT 与 FIXTURE_PORT 不能相同（都是 ${String(appPort)}）`);
   }
+
+  // 常驻 worker 必须待在 dev 库；连到测试库就会和全量测试抢队列（`B-03`/`B-04`）。
+  assertDevDatabase(url);
+
+  // 混合的 .next 会让页面「有数据但不渲染」，且现象极像接口 / 组件 bug。
+  // 启动任何进程之前就拦下（`B-01`/`B-02`）。
+  const artifactIssues = preflightArtifacts(join(SRC_ROOT, '.next'));
+  if (artifactIssues.length > 0) {
+    const detail = artifactIssues.map((i) => `  · ${i.code} — ${i.message}`).join('\n');
+    throw new Error(`.next 产物状态不一致，拒绝启动：\n${detail}`);
+  }
+  log('next-artifacts', '通过');
 
   await ensureDocker(SRC_ROOT);
   await waitForDatabase(url);
