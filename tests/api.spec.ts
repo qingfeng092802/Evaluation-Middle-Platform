@@ -705,7 +705,7 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
     const { claimNextRun } = await import('../db/repo/queue.js');
     const claimed = await claimNextRun();
     expect(claimed?.id).toBe(runId);
-    await processRun(runId);
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{
       status: string;
@@ -764,8 +764,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
   it('passThreshold=0（省略时的边界）⇒ pass_rate=1.0，score_overall 仍 0.6', async () => {
     const runId = await setupRun(0);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{ metrics: { scoreOverall: number | null; passRate: number | null } }>(
       await runIdRoute.GET(req(`/api/runs/${runId}`), params({ runId })),
@@ -777,8 +777,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
   it('省略 passThreshold ⇒ pass_rate 为 NULL（不是 0）', async () => {
     const runId = await setupRun(null);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{ metrics: { scoreOverall: number | null; passRate: number | null; coverage: number | null } }>(
       await runIdRoute.GET(req(`/api/runs/${runId}`), params({ runId })),
@@ -794,8 +794,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
 
     const runId = await setupRun(0.5);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{
       status: string;

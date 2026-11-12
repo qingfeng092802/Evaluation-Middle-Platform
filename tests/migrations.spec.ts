@@ -116,12 +116,15 @@ beforeEach(async () => {
 });
 
 describe('AC-1 · 迁移与不可变红线', () => {
-  it('T-10 触发器全名单恰好 17 个，且逐一存在', async () => {
+  it('T-10 触发器全名单恰好 19 个，且逐一存在', async () => {
     const res = await client.query<{ tgname: string }>(
       `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname`,
     );
     const actual = res.rows.map((r) => r.tgname).sort();
-    expect(EXPECTED_TRIGGER_COUNT).toBe(17);
+    // 17（M1）→ 19（M2 Batch 1 新增 gateway_idempotency 的 no_delete + usage_once）。
+    // 硬编码是**故意**的：`EXPECTED_TRIGGER_COUNT` 由 `TRIGGER_NAMES.length` 算出，
+    // 若只断言两者相等，把名单和数量一起改错就测不出来。
+    expect(EXPECTED_TRIGGER_COUNT).toBe(19);
     expect(actual).toEqual([...TRIGGER_NAMES].sort());
   });
 

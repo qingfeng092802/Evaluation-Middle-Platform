@@ -1,6 +1,13 @@
-#!/usr/bin/env node
 /**
  * `npm run check:tokens` —— AS-1 / AS-2 的静态扫描补充（`工程规则` §4.1）。
+ *
+ * **本文件刻意不写 shebang。**
+ * 它被 `tests/check-tokens.spec.ts` 直接 `import`，因此会走 Vite 的 SSR 内联转换，
+ * 而 Vite 5.4.21 的 `ssrTransform` 用 `/^#!.*\n/` 剥 shebang —— JS 正则的 `.`
+ * 不匹配 `\r`，在 Windows（`core.autocrlf=true`，检出为 CRLF）上剥不掉，
+ * shebang 会残留在生成代码中部 ⇒ `SyntaxError: Invalid or unexpected token`。
+ * 本文件由 `node scripts/check-tokens.mjs` 调用（见 package.json），不需要 shebang；
+ * 再有人加回来会让整条测试套件在本机红。要加，请同时引入 `.gitattributes` 统一为 LF。
  *
  * 为什么在 ESLint 之外还要有这个脚本：
  * ESLint 的 `no-restricted-syntax` 只看 AST 字面量，抓不到**字符串里拼出来的**颜色

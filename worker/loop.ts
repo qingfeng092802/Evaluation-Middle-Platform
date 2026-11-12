@@ -59,13 +59,26 @@ interface SnapshotShape {
 }
 
 /** 处理一条已领取的 run（状态已由 `claim_next_run()` 置为 RUNNING）。 */
-export async function processRun(runId: string): Promise<void> {
+export async function processRun(runId: string, claimEpoch: number): Promise<void> {
   // 领取时 `heartbeat_at` 保持 NULL（由 claim_next_run 决定，不在这里写）：
   // 只有**真正在跑的 worker** 才续约，否则「领了就跑路」也会显得活着。
+  //
+  // `claimEpoch` 是 M2-3 的 fencing 判据：心跳带 `WHERE claim_epoch = $epoch`。
+  // 返回 `false` 表示「我已不是属主」（被回收后别人领走了）——
+  // 此时必须**停止续约并放弃该 run**，不得继续写任何结果。
+  let lostOwnership = false;
   const heartbeat = setInterval(() => {
-    void touchHeartbeat(runId).catch((err: unknown) => {
-      log(`run ${runId} 心跳失败：${(err as Error).message}`);
-    });
+    void touchHeartbeat(runId, claimEpoch)
+      .then((ok) => {
+        if (!ok && !lostOwnership) {
+          lostOwnership = true;
+          log(`run ${runId} 已不是属主（epoch=${String(claimEpoch)}），停止续约并放弃`);
+          clearInterval(heartbeat);
+        }
+      })
+      .catch((err: unknown) => {
+        log(`run ${runId} 心跳失败：${(err as Error).message}`);
+      });
   }, HEARTBEAT_INTERVAL_MS);
 
   try {
@@ -187,8 +200,8 @@ export async function runWorker(): Promise<void> {
         await sleep(POLL_INTERVAL_MS);
         continue;
       }
-      log(`领取 run ${claimed.id}（${claimed.totalCases} 条 Case）`);
-      await processRun(claimed.id);
+      log(`领取 run ${claimed.id}（${claimed.totalCases} 条 Case，epoch=${String(claimed.claimEpoch)}）`);
+      await processRun(claimed.id, claimed.claimEpoch);
     } catch (err) {
       log(`处理失败：${(err as Error).message}`);
       await sleep(POLL_INTERVAL_MS);
