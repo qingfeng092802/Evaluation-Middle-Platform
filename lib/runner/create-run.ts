@@ -7,6 +7,7 @@
  * 快照在此一次写入（R-11）：此后执行期只读 `config_snapshot`，不再回查模板表。
  */
 import { EvalRunCreate } from '@eval-platform/contracts';
+import type { EvaluatorConfig } from '@eval-platform/contracts';
 import { createRun } from '../../db/repo/evalRuns.js';
 import { getVersionById, getRetrievalReadiness } from '../../db/repo/datasets.js';
 import { getT1ExecutionConfig } from '../../db/repo/targets.js';
@@ -68,8 +69,30 @@ export async function createEvalRun(rawBody: unknown): Promise<string> {
   }
 
   // ---- 单价快照（R-11）----
-  const price = await getEffectivePrice(target.modelProviderId, target.modelId);
-  const priceSnapshot: PriceSnapshotEntry[] = price ? [toSnapshotEntry(price)] : [];
+  //
+  // **目标模型与裁判模型都要进快照**。裁判成本单独入账（`OPEN-3` 的 `cost_judge`），
+  // 而执行期只允许读快照（R-11，不允许回查 `model_prices`）。若这里只快照目标模型，
+  // 裁判那边就查不到价，只能记 0 —— 等于把裁判开销从账上抹掉。
+  const priceEntries: PriceSnapshotEntry[] = [];
+  const targetPrice = await getEffectivePrice(target.modelProviderId, target.modelId);
+  if (targetPrice) priceEntries.push(toSnapshotEntry(targetPrice));
+
+  const judgeConfigs = body.evaluators
+    .map((e) => e.config)
+    .filter((c): c is Extract<EvaluatorConfig, { key: 'judge' }> => c.key === 'judge');
+
+  for (const jc of judgeConfigs) {
+    // 同一裁判 (厂商, 模型) 只快照一次
+    const already = priceEntries.some(
+      (p) => p.modelProviderId === jc.modelProviderId && p.modelId === jc.modelId,
+    );
+    if (already) continue;
+    const jp = await getEffectivePrice(jc.modelProviderId, jc.modelId);
+    // 没配价就不进快照：执行期同样记 0，但至少**不会**错用目标模型的价。
+    if (jp) priceEntries.push(toSnapshotEntry(jp));
+  }
+
+  const priceSnapshot = priceEntries;
 
   const provider = await getProviderForExecution(target.modelProviderId);
   if (!provider) throw new BlockedError('BLOCKED_NO_PROVIDER_CREDENTIALS', '厂商不可用');

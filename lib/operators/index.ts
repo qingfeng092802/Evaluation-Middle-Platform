@@ -1,8 +1,14 @@
 /**
  * 算子工厂：`key → 实现`。
  *
- * 只有**六个内置规则算子**。`judge`（裁判）在 M2 才落地，此处刻意不注册 ——
- * 注册一个空壳会让 `RunPreflight` 误以为裁判可用。
+ * 这里只注册**六个内置规则算子**。`judge`（裁判）**刻意不在这里**：
+ * 它需要一次模型调用（`lib/operators/judge.ts` 的 `createJudgeOperator({ chat })`），
+ * 而这一层的铁律是「不 import `db`、不发网络请求」。把它注册进来，
+ * 要么得在这一层塞一个依赖注入容器，要么得让 `bindByKey` 返回一个没有 chat 的空壳 ——
+ * 后者会让 `RunPreflight` 以为裁判可用，然后每条 Case 静默失败。
+ *
+ * 裁判由 runner 侧按 `kind === 'judge'` 单独接线（`lib/runner/execute-case.ts`），
+ * 因此 `bindByKey('judge', …)` 返回 `undefined` 是**设计如此**，不是遗漏。
  *
  * 这一层不 import `db`：算子必须是纯函数，否则六个算子会各自长出并发、重试、超时
  * （`TS-3` 短板 2）。
@@ -40,7 +46,8 @@ export function getOperator(key: string) {
  * TypeScript 无法从 `key: string` 推出具体那一个。擦成统一的 `EvaluatorConfig` 后
  * 由算子自己按 key 里的判别字段取值——这也是为什么每个 config 都带 `key` 字段。
  *
- * 未知 key（含 `judge`）返回 `undefined`：M1 不注册裁判，不能让空壳混进 preflight。
+ * 未知 key（含 `judge`）返回 `undefined`：裁判的模型调用必须由 runner 注入，
+ * 不能在这里造一个没有 chat 的空壳混进执行链（见文件头）。
  */
 export function bindByKey(
   key: string,

@@ -17,16 +17,17 @@ describe('NAV_SECTIONS · 只允许 4 个分区（pages-and-flows §0.3）', () 
     expect(NAV_SECTIONS.map((s) => s.title)).toEqual(['运行', '资产', '算子', '管理']);
   });
 
-  it('M1 可点的页面只有 4 个：/runs、/runs/new、/datasets、/targets', () => {
+  it('M2 可点的页面：/runs、/runs/new、/datasets、/targets、/settings', () => {
     const enabled = NAV_SECTIONS.flatMap((s) => s.items)
       .filter((i) => i.disabled !== true)
       .map((i) => i.href);
-    expect(enabled).toEqual(['/runs', '/runs/new', '/datasets', '/targets']);
+    expect(enabled).toEqual(['/runs', '/runs/new', '/datasets', '/targets', '/settings']);
   });
 
   it('P1 项一律置灰并带 P1 标记（不得是死链）', () => {
     const p1 = NAV_SECTIONS.flatMap((s) => s.items).filter((i) => i.disabled === true);
-    expect(p1.map((i) => i.href)).toEqual(['/evaluators', '/settings']);
+    // M2 交付 PG-09 后只剩 /evaluators
+    expect(p1.map((i) => i.href)).toEqual(['/evaluators']);
     for (const item of p1) expect(item.badge).toBe('P1');
   });
 
@@ -51,7 +52,11 @@ describe('resolveActiveNav · 详情页高亮父项', () => {
   });
 
   it('未知路由不高亮任何项', () => {
-    expect(resolveActiveNav('/settings')).toBeUndefined();
+    expect(resolveActiveNav('/nowhere')).toBeUndefined();
     expect(resolveActiveNav(null)).toBeUndefined();
+  });
+
+  it('/settings 高亮管理配置（M2 · PG-09 模型网关 Tab）', () => {
+    expect(resolveActiveNav('/settings')).toBe('/settings');
   });
 });

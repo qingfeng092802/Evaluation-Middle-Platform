@@ -64,6 +64,59 @@ export async function listPrices(): Promise<ModelPrice[]> {
   return rows.map(toPrice);
 }
 
+/** 某厂商的单价行；`providerId` 省略 ⇒ 全部（`GET /api/prices` 的过滤口径）。 */
+export async function listPricesByProvider(providerId?: string): Promise<ModelPrice[]> {
+  if (providerId === undefined) return listPrices();
+  const rows = await query<PriceRow>(
+    `SELECT id, model_provider_id, model_id, display_name,
+            input_price_per_1k, output_price_per_1k, currency, effective_from, created_at
+       FROM model_prices WHERE model_provider_id = $1 ORDER BY effective_from DESC`,
+    [providerId],
+  );
+  return rows.map(toPrice);
+}
+
+/**
+ * 新增单价行（`POST /api/prices`）。
+ *
+ * **只 INSERT，没有任何 UPDATE 分支**：调价靠 `effective_from` 区分（`MP-2`），
+ * 改旧行会让历史 run 的成本无法对账。因此这里连「已存在则更新」都不写 ——
+ * 同一 `(provider, model, effective_from)` 重复提交由唯一键抛 23505 → 409。
+ *
+ * `effectiveFrom` 省略 ⇒ 交给数据库的 `DEFAULT now()`，而不是在 Node 里取当前时间：
+ * 后者会让同一次请求的两个价格行落在不同时点上。
+ */
+export async function createPrice(p: {
+  modelProviderId: string;
+  modelId: string;
+  displayName: string;
+  inputPricePer1k: number;
+  outputPricePer1k: number;
+  currency: string;
+  effectiveFrom?: string | undefined;
+}): Promise<ModelPrice> {
+  const row = await queryOne<PriceRow>(
+    `INSERT INTO model_prices
+       (model_provider_id, model_id, display_name,
+        input_price_per_1k, output_price_per_1k, currency, effective_from)
+     VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::timestamptz, now()))
+     RETURNING id, model_provider_id, model_id, display_name,
+               input_price_per_1k, output_price_per_1k, currency, effective_from, created_at`,
+    [
+      p.modelProviderId,
+      p.modelId,
+      p.displayName,
+      // 写入一律走字符串，让数据库以 numeric 精度处理（OPEN-3：禁止 Node 浮点累加）
+      String(p.inputPricePer1k),
+      String(p.outputPricePer1k),
+      p.currency,
+      p.effectiveFrom ?? null,
+    ],
+  );
+  if (!row) throw new Error('createPrice 未返回行');
+  return toPrice(row);
+}
+
 /**
  * 种子用：幂等写入 fixture 单价。
  *

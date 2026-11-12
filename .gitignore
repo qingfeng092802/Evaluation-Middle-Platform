@@ -21,6 +21,11 @@ service-account*.json
 api-keys.*
 *-apikey.*
 
+# LiteLLM sidecar：密钥注入文件与由数据库生成的配置
+# 生成物每次都该重新产出（`npm run gateway:config`），入库只会让路由表出现第二个副本。
+tools/litellm/gateway.env
+tools/litellm/config.generated.yaml
+
 # ---------- 真实用户评测数据（绝不入库）----------
 data/real/
 data/uploads/

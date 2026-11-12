@@ -176,6 +176,12 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDatabase(databaseUrl());
   await runSeed({ silent: true });
+  // M2 · Batch 2 起种子里那条 fixture 厂商**默认停用**（交付物 6：摘除默认网关路径）。
+  // 本文件是 M1 的端到端联调用例，必须有一个可执行的厂商才能建 T1 目标、跑到终态，
+  // 所以这里**显式**把它打开 —— 这正是「主动选择」而非默认路径：
+  // 默认态下 preflight 会报「尚未配置凭证」，只有主动启用了才跑得通。
+  // 「BLOCKED_NO_PROVIDER_CREDENTIALS」那条用例随后会把它们全部置回 false。
+  await client.query(`UPDATE model_providers SET is_active = true`);
 });
 
 // ---------------------------------------------------------------------------

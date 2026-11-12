@@ -26,6 +26,8 @@ import { getT1ExecutionConfig } from '../db/repo/targets.js';
 import { getProviderForExecution } from '../db/repo/modelProviders.js';
 import { insertResult, listDoneCaseKeys } from '../db/repo/evalCaseResults.js';
 import { executeCase, specFromRunEvaluator } from '../lib/runner/execute-case.js';
+import { createJudgeChat } from '../lib/runner/judge-chat.js';
+import type { JudgeChat } from '../lib/operators/judge.js';
 import type { PriceSnapshotEntry } from '../lib/cost/index.js';
 import { heartbeatIntervalMs, leaseDurationMs } from '../lib/lease/index.js';
 import { closeDb } from '../db/schema/index.js';
@@ -56,6 +58,50 @@ function sleep(ms: number): Promise<void> {
 
 interface SnapshotShape {
   priceSnapshot?: PriceSnapshotEntry[];
+}
+
+/**
+ * 预先为 run 里出现的**每个裁判 (厂商, 模型)** 建好一次模型调用。
+ *
+ * 为什么不在 `executeCase` 里懒加载：`executeCase` 是同步取 chat 的（它要跑在
+ * 一串算子中间），而查厂商是异步的。懒加载会逼出一个「首次返回 null、
+ * 第二次才有」的时序陷阱 —— 第一次那条 Case 会被误判成「裁判不可用」。
+ * 因此**先全部建好**，再开跑；建不出来的登记成 `null`，让该类 Case 明确 FAILED。
+ *
+ * 键是 `providerId:modelId` 而非仅 providerId：同一厂商下可以配两个裁判模型
+ * （如 5 分制 / 10 分制各一个），只按厂商缓存会把后一个的 model 用错。
+ */
+async function buildJudgeChatResolver(
+  evaluators: readonly { kind: 'rule' | 'judge'; config: unknown }[],
+): Promise<(config: { modelProviderId: string; modelId: string }) => JudgeChat | null> {
+  const targets = new Map<string, { modelProviderId: string; modelId: string }>();
+  for (const e of evaluators) {
+    if (e.kind !== 'judge') continue;
+    const c = e.config as { modelProviderId: string; modelId: string };
+    targets.set(`${c.modelProviderId}:${c.modelId}`, {
+      modelProviderId: c.modelProviderId,
+      modelId: c.modelId,
+    });
+  }
+
+  const built = new Map<string, JudgeChat | null>();
+  await Promise.all(
+    [...targets].map(async ([key, t]) => {
+      const provider = await getProviderForExecution(t.modelProviderId);
+      built.set(
+        key,
+        provider === null
+          ? null
+          : createJudgeChat({
+              baseUrl: provider.baseUrl,
+              apiKey: provider.apiKey,
+              model: t.modelId,
+            }),
+      );
+    }),
+  );
+
+  return (config) => built.get(`${config.modelProviderId}:${config.modelId}`) ?? null;
 }
 
 /** 处理一条已领取的 run（状态已由 `claim_next_run()` 置为 RUNNING）。 */
@@ -122,6 +168,8 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
 
     const limit = pLimit(Math.max(1, Math.min(detail.concurrency || CONCURRENCY_DEFAULT, 32)));
 
+    const resolveJudgeChat = await buildJudgeChatResolver(evaluators);
+
     const tasks = cases
       .filter((c) => !done.has(c.caseKey)) // 重跑时跳过已写入的 Case（幂等）
       .map((c) =>
@@ -134,6 +182,7 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
             provider,
             evaluators,
             priceSnapshot,
+            resolveJudgeChat,
           });
           await insertResult({
             evalRunId: runId,
@@ -147,12 +196,12 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
             score: outcome.score,
             passed: outcome.passed,
             operatorScores: outcome.operatorScores,
-            judgeReasoning: null,
+            judgeReasoning: outcome.judgeReasoning,
             latencyMs: outcome.latencyMs,
             tokensIn: outcome.tokensIn,
             tokensOut: outcome.tokensOut,
             costTarget: outcome.costTarget,
-            costJudge: 0,
+            costJudge: outcome.costJudge,
           });
           // 递增刷新进度：否则运行中 `succeeded_cases` 恒为 0，
           // `PG-03` 的进度条整块 UI 等于不存在（`#1` 浏览器验收发现）。

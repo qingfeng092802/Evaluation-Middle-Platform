@@ -57,7 +57,7 @@ export const NAV_SECTIONS: readonly NavSectionSpec[] = [
   },
   {
     title: '管理',
-    items: [{ label: '管理配置', href: '/settings', icon: 'Settings', disabled: true, badge: 'P1' }],
+    items: [{ label: '管理配置', href: '/settings', icon: 'Settings' }],
   },
 ];
 
@@ -73,5 +73,7 @@ export function resolveActiveNav(pathname: string | null): string | undefined {
   if (pathname.startsWith('/runs')) return '/runs';
   if (pathname.startsWith('/datasets')) return '/datasets';
   if (pathname.startsWith('/targets')) return '/targets';
+  // M2 · Batch 2：模型网关 Tab 上线，/settings 从占位变成真实页面。
+  if (pathname.startsWith('/settings')) return '/settings';
   return undefined;
 }
