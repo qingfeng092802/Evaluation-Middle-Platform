@@ -25,7 +25,10 @@ import {
 } from '@/components/ui/sheet';
 import { StatusBadge } from '@/components/ui/status-badge';
 import { LiveRunProgressBar } from '@/components/runs/live-run-progress-bar';
-import { useApi, usePolling } from '@/lib/ui/use-api';
+import { StreamConnectionIndicator } from '@/components/runs/stream-connection-indicator';
+import { useApi } from '@/lib/ui/use-api';
+import { milestoneOf } from '@/lib/ui/run-stream-client';
+import { useRunStream } from '@/lib/ui/use-run-stream';
 import {
   EMPTY,
   formatCost,
@@ -37,7 +40,6 @@ import {
 } from '@/lib/format';
 import { emptyState, type StatusTone } from '@/lib/ui/derive';
 import {
-  POLL_INTERVAL_MS,
   caseKeyLabel,
   caseStatusLabel,
   caseStatusTone,
@@ -169,16 +171,63 @@ export default function RunDetailPage(): React.ReactElement {
     return () => sheetEl.removeEventListener('keydown', onKeyDown);
   }, [sheetEl, openCaseKey, stepCase]);
 
-  // 只有还在跑的两个状态才轮询；终态之后数据不会再变，继续打接口纯属浪费。
+  // 只有还在跑的两个状态才有实时流；终态之后数据不会再变，再订阅只是在追一条
+  // 立刻结束的流（并被当成断线无限重连）。
   const live = run.data !== null && shouldPoll(run.data.status, false, true);
-  usePolling(
-    () => {
-      run.reload();
-      cases.reload();
-    },
-    live,
-    POLL_INTERVAL_MS,
-  );
+
+  /**
+   * SSE 订阅（`[FE-M2-02]` 交付物 4/5）。
+   *
+   * 计数不再来自轮询，而是这条流；但**组件 props 一个都没改**——
+   * `LiveRunProgressBar` 仍然只吃 `DESIGN.md` §4.2 锁定的那 8 个。
+   *
+   * 两个回调：
+   *  - `onResync` = `run.reload`：§3.5 [6] 步骤 2「重连先拉全量快照」走的就是
+   *    `GET /api/runs/:id`。重连时元数据（名称、耗时、状态徽章）也要一起追平，
+   *    只补进度条是不够的。
+   *  - `onTerminal` = 终态到来时补拉一次详情与明细：`status` 事件只说明状态变了，
+   *    汇总指标（分数、成本、P50/P95）是在 `finalizeRun` 那条语句里一次性写的，
+   *    不拉的话页面会停在 RUNNING 时期的空指标上。
+   *
+   * 明细表不走 SSE：`case` 事件只带摘要（契约刻意如此，300 条的完整 payload
+   * 会把单条事件推到几十 KB）。终态补拉一次即可 —— 中途插入会把用户正在看的
+   * 排序和滚动位置打乱。
+   */
+  const streamEnabled = runId !== '' && live;
+  // 依赖取 `reload`（`useApi` 里是 stable 的 `useCallback`）而不是整个 `run` 对象：
+  // `ApiState` 每次 render 都是新对象字面量，放进 deps 会让这两个回调每帧换引用，
+  // 进而每帧触发一次 ref 同步 effect。
+  const reloadRun = run.reload;
+  const reloadCases = cases.reload;
+  const onResync = React.useCallback(() => {
+    reloadRun();
+  }, [reloadRun]);
+  const onTerminal = React.useCallback(() => {
+    reloadRun();
+    reloadCases();
+  }, [reloadRun, reloadCases]);
+  const stream = useRunStream(runId, streamEnabled, { onResync, onTerminal });
+
+  /**
+   * 明细表按 **SSE 的 10% 里程碑**刷新，而不是既有的 2s 定时轮询，也不是每来一条
+   * `case` 就刷：前者是「轮询没下线」，后者会把 300 条 Case 变成 300 次请求，
+   * 而每次都要取 200 行。
+   *
+   * 里程碑刷新还有个额外好处：**节奏跟随真实进度**。库里一条都没动的时候，
+   * 页面也不会去打接口（定时轮询做不到这一点）。
+   */
+  const milestone = milestoneOf(stream.progress.completedCount, stream.progress.totalCount);
+  const lastMilestoneRef = React.useRef<number | null>(null);
+  React.useEffect(() => {
+    if (lastMilestoneRef.current === null) {
+      // 首帧只记录：初次加载已经取过一次明细，不必再打一遍
+      lastMilestoneRef.current = milestone;
+      return;
+    }
+    if (lastMilestoneRef.current === milestone) return;
+    lastMilestoneRef.current = milestone;
+    if (live) reloadCases();
+  }, [milestone, live, reloadCases]);
 
   const detail = run.data;
 
@@ -286,7 +335,18 @@ export default function RunDetailPage(): React.ReactElement {
   }
 
   const cards = metricCardsOf(detail);
-  const completed = detail.counts.succeededCases + detail.counts.failedCases;
+  // 断线的那一瞬间起，进度条上的数字就是「最后一次成功读到的库里的值」。
+  // 优先用 SSE 的计数，因为它是回查数据库得来、且在事件之间也是真实值；
+  // 流还没送来快照时（首帧之前）回落到详情接口的计数，避免先闪一个 0 / N。
+  const streamCounts = stream.progress.totalCount > 0 ? stream.progress : null;
+  const completed =
+    streamCounts === null
+      ? detail.counts.succeededCases + detail.counts.failedCases
+      : streamCounts.completedCount;
+  const failedCount = streamCounts === null ? detail.counts.failedCases : streamCounts.failedCount;
+  const totalCount = streamCounts === null ? detail.counts.totalCases : streamCounts.totalCount;
+  const runStatus = streamCounts === null ? detail.status : streamCounts.runStatus;
+  const latest = streamCounts?.latest ?? null;
 
   return (
     <AppShellWithTheme breadcrumbs={breadcrumbs(runId)}>
@@ -338,19 +398,27 @@ export default function RunDetailPage(): React.ReactElement {
           ))}
         </div>
 
-        {/* ---- 区域 3 · 运行中条 ---- */}
-        {detail.status === 'PENDING' || detail.status === 'RUNNING' ? (
+        {/* ---- 区域 3 · 运行中条（数据源：SSE） ---- */}
+        {runStatus === 'PENDING' || runStatus === 'RUNNING' ? (
           <Card>
-            <CardContent className="pt-3">
+            <CardContent className="flex flex-col gap-2 pt-3">
               <LiveRunProgressBar
                 completedCount={completed}
-                totalCount={detail.counts.totalCases}
-                failedCount={detail.counts.failedCases}
-                runStatus={detail.status}
+                totalCount={totalCount}
+                failedCount={failedCount}
+                runStatus={runStatus}
                 live={live}
-                score={null}
-                passed={null}
-                latencyMs={null}
+                score={latest?.score ?? null}
+                passed={latest?.passed ?? null}
+                latencyMs={latest?.latencyMs ?? null}
+              />
+              {/*
+                连接三态紧跟在进度条下方：进度条停了的时候，用户第一个要问的就是
+                「是没在跑，还是我看不到了」。两者必须出现在同一屏。
+              */}
+              <StreamConnectionIndicator
+                connection={stream.connection}
+                announcement={stream.announcement}
               />
             </CardContent>
           </Card>

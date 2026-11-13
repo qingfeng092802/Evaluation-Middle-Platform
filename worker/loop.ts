@@ -12,7 +12,6 @@
  *  4. **每落一条 Case 就刷新计数字段**，否则运行中进度条永远是 `0 / N`（#1）；
  *  5. `SIGTERM` 时**跑完当前批次再退**，不在写入一半时硬中断。
  */
-import pLimit from 'p-limit';
 import { claimNextRun, reclaimStaleRuns, touchHeartbeat } from '../db/repo/queue.js';
 import {
   finalizeRun,
@@ -26,6 +25,7 @@ import { getT1ExecutionConfig } from '../db/repo/targets.js';
 import { getProviderForExecution } from '../db/repo/modelProviders.js';
 import { insertResult, listDoneCaseKeys } from '../db/repo/evalCaseResults.js';
 import { executeCase, specFromRunEvaluator } from '../lib/runner/execute-case.js';
+import { effectiveConcurrency, providerLimiter } from '../lib/runner/concurrency.js';
 import { createJudgeChat } from '../lib/runner/judge-chat.js';
 import type { JudgeChat } from '../lib/operators/judge.js';
 import type { PriceSnapshotEntry } from '../lib/cost/index.js';
@@ -166,7 +166,21 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
       }),
     );
 
-    const limit = pLimit(Math.max(1, Math.min(detail.concurrency || CONCURRENCY_DEFAULT, 32)));
+    // 并发度取 min(run.concurrency, provider.max_concurrency)：用户意图（run）
+    // 可以被物理上限（厂商）压低，反过来不行。`effConcurrency` 记在日志里，
+    // 否则「慢」只会被归因到网关，而真实原因是厂商只给了 2 个并发。
+    const effConcurrency = effectiveConcurrency({
+      runConcurrency: detail.concurrency || CONCURRENCY_DEFAULT,
+      providerMaxConcurrency: provider.maxConcurrency,
+    });
+    log(
+      `run ${runId} 并发生效值 ${String(effConcurrency.effective)} ` +
+        `（run=${String(effConcurrency.runLimit)}，厂商=${String(effConcurrency.providerLimit)}，` +
+        `受限于 ${effConcurrency.cappedBy === 'provider' ? '厂商' : 'run'}）`,
+    );
+    // 闸门按**厂商**共享：同一厂商被两个 run 同时使用时，各自开一个 p-limit
+    // 会让厂商看到 2×上限。这里取共享实例，保证进程内单厂商不超发。
+    const limit = providerLimiter(provider.id, effConcurrency.effective);
 
     const resolveJudgeChat = await buildJudgeChatResolver(evaluators);
 

@@ -339,7 +339,11 @@ export async function finalizeRun(runId: string, cancelled: boolean): Promise<st
               cost_target = $13,
               cost_judge = $14,
               finished_at = now()
-        WHERE id = $1`,
+        WHERE id = $1
+        -- 终态也要通知：SSE 靠 NOTIFY 唤醒，不发的话最后一条 status 事件
+        -- 要等下一次 15s 心跳才会被发现 —— 用户看着进度条满格却仍显示「运行中」。
+        -- 写在同一条语句里是为了让通知随事务提交后才投递（§3.5 [3]）。
+        RETURNING pg_notify('run_progress', id::text)`,
       [
         runId,
         status,
@@ -410,7 +414,10 @@ export async function refreshRunProgress(runId: string): Promise<void> {
            FROM eval_case_results
           WHERE eval_run_id = $1
        ) s
-      WHERE r.id = $1 AND r.status = 'RUNNING'`,
+      WHERE r.id = $1 AND r.status = 'RUNNING'
+      -- 写库与通知同一条语句：POSTGRES 会在事务提交后才投递，订阅方回查时
+      -- 一定能看到刚写的行（否则会发出「事件到了、计数没变」的假事件）。
+      RETURNING pg_notify('run_progress', r.id::text)`,
     [runId],
   );
 }
