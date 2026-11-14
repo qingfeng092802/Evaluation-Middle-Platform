@@ -13,6 +13,8 @@
 > | 页面结构 / 按钮文案 / 状态机 / 拒绝清单 | [`../facts/pages-and-flows.md`](../facts/pages-and-flows.md)（`PG-01`…`PG-10`、`RS-01`…`RS-06`） |
 > | 架构选型 / 两条 P0 链路 / 评分口径 | [`../facts/technical-solution.md`](../facts/technical-solution.md)（`TS-1`…`TS-5`、`OPEN-1`…`OPEN-5`） |
 > | 表结构 / 索引 / 不可变触发器 / 迁移断言 | [`../facts/database-schema.md`](../facts/database-schema.md)（15 表、17 触发器、`T-01`…`T-22`） |
+>
+> **2026-11-15 复核：** M2 新增 `0019_claim_epoch.sql`（+1 表 `gateway_idempotency`、+2 触发器 `trg_gateway_idempotency_no_delete` / `trg_gateway_idempotency_usage_once`），现行计数 **16 表 / 19 触发器**。本节 §2.3 的 15/17 是 M1 范围的历史描述，保留原样。
 > | 视觉与交互硬约束 | [`../facts/DESIGN.md`](../facts/DESIGN.md)（Token、`tabular-nums`、`AS-1`…`AS-3`） |
 > | 接口 / 数据契约 | [`../../src/contracts/`](../../src/contracts/) |
 > | 工程门禁（TDD / 真栈验收 / 安全） | [`../工程规则.md`](../工程规则.md) |
