@@ -493,6 +493,22 @@ src/
 
 > **本轮新增三项**（echarts / lucide-react / zod 复核）来自「决策点 5」的 UI 栈与契约落地。
 
+### 5.1 复核记录（2026-11-13 · M2 Batch 2）
+
+> 处理方式遵循 `docs/工程规则.md` §10：**保留原判定，追加复核行，不直接替换。**
+
+| 对象 | 原判定 | 复核结果 | 依据 |
+|---|---|---|---|
+| `litellm` | 未核验（上表第 1 行） | **仍未在线核验，但已降级为「可失败而不影响门禁」** | 本轮 Context7 `fetch failed`、`WebFetch` 被安全分类器拦截；项目规则亦要求构建期不联网。因此 LiteLLM 的 `config.yaml` 键名仍是**未验证假设**，但它只出现在 `tools/litellm/config.example.yaml` 与生成器里 —— 门禁断言的是「我们生成的字符串」，不启动真容器。真栈联调属 Batch 4（`[INT-M2-01]`），届时以实际启动结果为准。 |
+
+**由此确定的两条实现约束**（2026-11-14 修正归属，原文写错：约束①的头注释在 `lib/gateway/target.ts`，不在 `lib/gateway/litellm-config.ts`——后者头注释的「两条不能违反的边界」是另外两条：Key 只以 `os.environ/<变量名>` 形式出现、不写计费字段；约束②的落地位置是**生成器红线 + 单测**，不笼统归于头注释）：
+
+1. **sidecar 是可选中间层，不是必需依赖**。`LITELLM_BASE_URL` 缺省为空 ⇒ 直连厂商，与 M1 行为完全一致；`lib/gateway/target.ts` 头注释明文「默认行为必须与 M1 完全一致（没配 `LITELLM_BASE_URL` 就直连）」，`tests/gateway-target.spec.ts` 用本机真 HTTP 服务器钉住「不配就直连、配了才改投」（`:85` 直连组 / `:125` 改投组）。
+2. **规则口径优先于上游字段**。落地位置：**生成器红线 + 单测**——生成器（`lib/gateway/litellm-config.ts`）在产物层不写任何计费字段（其头注释第 2 条边界「不写任何计费字段」），`tests/litellm-sidecar.spec.ts:257–265` 单测比对 `model_list` 键名集合与 `tools/litellm/config.example.yaml` 同构；任何计费键名出现在产物里都直接判红。
+
+> **复核追加（2026-11-14）**：「Batch 4 未拉起 gateway profile，容器未启动，真栈联调未验证。M2 的『真栈联调』实际只验证了 fixture 网关路径，未验证真实 LiteLLM 容器。」——上文「真栈联调属 Batch 4（`[INT-M2-01]`），届时以实际启动结果为准」的预期**未兑现**（`SPEC-M2` §6.4 / `HANDOFF.md` §4.5），按原样记录，不改结论。
+
+
 ---
 
 ## 6. 目录与运行时形态（规划，Step 10 落地）
