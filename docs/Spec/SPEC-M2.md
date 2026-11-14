@@ -339,33 +339,95 @@
 
 | 项 | 值 |
 |---|---|
-| 分支 | `feat/m2-*`（待定名） |
+| 分支 | `feat/m2-gateway-sse` |
 | 基线 | `dc04385` `merge(M1): 确定性评测闭环首个里程碑（--no-ff）` |
-| 提交 | 待填 |
+| 提交 | **本笔提交**（M2 最后一个 commit） |
 | 合并 | **未合并 `main`**，等待需求方明确授权 |
+
+> **关于「固定 Commit Hash」的自引用说明（如实记录，不回避）**：
+> §6 与本笔提交同属一个 commit，**文件内容在写入时无法包含自身的 hash** ——
+> 任何写进去的值都会在提交后立刻失效（`--amend` 也只会产生新 hash）。
+> 因此这里给出**可机械复验的定位方式**，而不是一个会过期的字面量：
+>
+> ```bash
+> git rev-parse feat/m2-gateway-sse          # 本笔提交（Batch 4）
+> git log --oneline dc04385..feat/m2-gateway-sse
+> ```
+>
+> 复核时的期望父链（**这些 hash 是固定的**，可逐条 `git show` 校验）：
+>
+> | 顺序 | Hash | 标题 |
+> |---|---|---|
+> | 基线 | `dc04385` | `merge(M1): 确定性评测闭环首个里程碑（--no-ff）` |
+> | 文档 | `1f47b8f` | `docs(M2): 定稿 SPEC-M2 并落实 T-1 文档口径` |
+> | 契约 | `bdf7c93` | `contracts(M2): 新增 provider probe 契约与 claim_epoch fencing token` |
+> | Batch 1 | `982fa1a` | `feat(M2): Batch 1 数据底座、Fencing Token 与幂等账本（0019）` |
+> | Batch 2 | `e224cef` | `feat(M2): Batch 2 多模型网关与 LLM-as-a-Judge（0020）` |
+> | Batch 3 | `7be5351` | `feat(M2): Batch 3 并发跑批引擎 + SSE 续传` |
+> | Batch 4 | 本笔提交 | `feat(M2): Batch 4 全链路真栈联调与研发自检收尾` |
 
 ### 6.2 批次完成情况
 
 | 批次 | 状态 | 主要交付物 | Commit |
 |---|---|---|---|
-| Batch 1 数据底座 / Fencing / 幂等账本 | 待填 | | |
-| Batch 2 多模型网关 / Judge | 待填 | | |
-| Batch 3 并发引擎 / SSE | 待填 | | |
-| Batch 4 真栈联调 | 待填 | | |
+| Batch 1 数据底座 / Fencing / 幂等账本 | ✅ 完成 | `0019_claim_epoch.sql`（`claim_epoch` 单调递增 fencing token + `gateway_idempotency` 幂等账本 + `down/` 回滚）；`claim_next_run()` 每次领取 +1；worker 全部写入带 `WHERE claim_epoch = $epoch`；契约与 `docs/facts/database-schema.md` 同步（表 15→16、触发器 17→19） | `982fa1a` |
+| Batch 2 多模型网关 / Judge | ✅ 完成 | LiteLLM sidecar 路由表生成（只写 `os.environ` 间接引用、产物禁含计费键）；`PG-09` 模型网关 Tab（Key 掩码、`WRITE_ONLY_FIELDS` 物理兑现、单价、并发上限）；`PG-02` 步骤 3 Judge 配置区块；裁判算子（解析失败 = `PARSE_ERROR` + `score IS NULL`，不落 0 分）；`POST /api/providers/{id}/probe`；fixture provider 置 `is_active=false` 摘除默认路径；AES-256-GCM 落库（缺 `PROVIDER_KEY_SECRET` 即抛错） | `e224cef` |
+| Batch 3 并发引擎 / SSE | ✅ 完成 | `effectiveConcurrency()`（`min(run.concurrency, provider.max_concurrency)`）+ `providerLimiter()` 按厂商共享 `p-limit`；`GET /api/runs/{runId}/stream`（先 LISTEN 再取快照、首帧恒为 snapshot、15s 心跳）；`refreshRunProgress`/`finalizeRun` 的 `UPDATE ... RETURNING pg_notify(...)`；前端 `run-stream-client` 状态机 + `use-run-stream`（关掉 `EventSource` 自动重连、30s 静默判死、退避 1s→8s）；`LiveRunProgressBar` 8 个 prop 未改 | `7be5351` |
+| Batch 4 真栈联调 | ✅ 完成（**带未验证项，见 §6.4**） | `scripts/pw-local.ts` 新增 `waitUntil()` 并替换 3 份浏览器用例里的 **9 处** `waitForTimeout` 固定等待（真栈联调暴露：`next dev` 冷编译 `/api/datasets/imports/validate` 要 2.8s，而原断言等 2.5s ⇒ 冷缓存必红、热缓存白等）；新增 `tests/pw-local-wait.spec.ts` 4 条（含「超时抛错」的反向验证）；真栈全链路正/负路径实跑；本节自检记录 | 本笔提交 |
 
 ### 6.3 机械门禁实测
 
+> **统一环境条件（本节所有读数在同一棵常驻真栈实例上取得，中途未重启）**：
+> Windows 11 · Node `v24.18.0` · vitest `2.1.8` ·
+> `npm run dev:all` 起的**完整真栈常驻**（Postgres 容器 `eval-platform-db` healthy +
+> fixture 网关 `:8787` + 常驻 worker + `next dev` `:3000`）·
+> **有数据态** · **有 worker 态**（worker 常驻，实跑过 COMPLETED 与 FAILED 终态）·
+> 单测走自动派生的 `eval_platform_test` 库。
+>
+> **数据量随时间增长（如实标注，避免读数对不上）**：`npm test` 与 `typecheck`/`lint` 一组读数
+> 取自 `14:35`（当时 dev 库 5 个评测集 / 5 个版本 / 4 个 Target / 7 次运行 / 350 条 Case 结果）；
+> `check:datasets-render`、`e2e-demo`、`e2e-fail` 等价驱动、SSE 实读与浏览器层复跑取自
+> `14:45–14:50`（此时因前序实跑新增了 e2e 数据，变为 6 / 6 / 5 / 9 / 450）。
+> **两组都是「有数据态」，差别只在数据条数**，不是环境档次不同。
+
 | 门禁 | 命令 | 实测结果 | **环境条件** |
 |---|---|---|---|
-| 类型（应用） | `npm run typecheck` | 待填 | — |
-| 类型（契约） | `npm run typecheck -w @eval-platform/contracts` | 待填 | — |
-| 静态检查 | `npm run lint` | 待填 | — |
-| 设计门禁 | `npm run lint:design` | 待填 | — |
-| 单测 + 真库 | `npm test` | 待填 | **种子态 / 有数据态 / 有 worker 态**（必须写明是哪一档） |
+| 类型（应用） | `npm run typecheck` | ✅ **exit 0**（`tsc --noEmit` 通过，且串联执行契约 workspace） | 无服务依赖；有数据态下实跑 |
+| 类型（契约） | `npm run typecheck -w @eval-platform/contracts` | ✅ **exit 0** | 同上 |
+| 静态检查 | `npm run lint` | ✅ **exit 0**（`eslint . --max-warnings=0`，0 warning） | 同上 |
+| 设计门禁 | `npm run lint:design` | ✅ **exit 0**（`lint` + `stylelint` + `check:tokens`）<br>`[check:tokens] 通过：98 个文件，无裸色值 / 渐变 / 内联样式。` | 同上 |
+| 单测 + 真库 | `npm test` | ✅ **exit 0**<br>**54 files / 704 passed，0 skipped**，244.62s | **有数据态 + 有 worker 态 + dev server 态**（三档同时成立） |
+
+**同窗口补充读数（`L2` 真栈切片，均为实跑，非 mock）**
+
+| 切片 | 命令 / 方式 | 实测结果 |
+|---|---|---|
+| 前端渲染对账 | `npm run check:datasets-render` | ✅ **exit 0**：`/datasets` `apiItems=6 renderedRows=6 statusCount=6`；`/runs` `apiItems=9 renderedRows=9 statusCount=9` |
+| 正向全链路 | `npx tsx scripts/e2e-demo.ts` | ✅ **exit 0**：run `94dc8cc4-3e1f-4848-879d-461c9e184c18` 终态 `COMPLETED`，`totalCases=50` / `succeededCases=50` / `scoreOverall=0.6` / `passRate=null`（未设阈值不拿 0 冒充）/ `coverage=1` / 成本全 0 / 分数分布 30 条 1.0 + 20 条 0.0 |
+| 负向（网关不可达） | `e2e-fail` 等价驱动（见 §6.4 第 2 行） | ✅ **exit 0**：run `1372425f-76d6-425c-aae8-8319371eca11` 终态 `FAILED`，`succeededCases=0` / `failedCases=50` / **`score_overall IS NULL`**（不落 0 分、不编分数） |
+| SSE 真帧（运行中） | `curl -N /api/runs/{id}/stream` 实读 | ✅ `content-type: text/event-stream; charset=utf-8`；帧型计数 `{snapshot:1, status:2, case:50}`；`id` 从 `…:0` 到 `…:52` 且**严格单调、无重复** |
+| SSE 断线续传口径 | 带 `Last-Event-ID: …:40` 重连 | ✅ **只回 1 帧 `snapshot`（`id …:0`），无任何事件回放** —— `PROGRESS_RESUME_POLICY.mode='snapshot_only'` 在真栈上成立 |
+| 浏览器层（真实 Edge） | `vitest run` 三份 parity/keyboard 用例 | ✅ **3 files / 43 passed，0 skipped**（`datasets-render-parity` 23 / `runs-render-parity` 17 / `run-detail-keyboard` 3），在本棵栈上复跑通过（同一组用例在冷启动栈上另跑过一次，同为 43/43） |
+
+> **与前三批读数的差别（不是退步，是补齐）**：Batch 1/2/3 的 `npm test` 读数分别带
+> 8 条 skip（真实浏览器用例因未起服务而跳过，当时明确「不计为通过」）。本批在真栈常驻下重跑，
+> **skip = 0**，那 8 条已真正执行并通过。
+>
+> **一条环境观察（不是产品缺陷，但会误导复核）**：`next dev` 的 jest-worker 子进程池在本次联调中
+> **两次**损坏，表现为**任意动态段 API 路由**（`/api/datasets/[id]/versions`、`/api/runs/[runId]`、
+> `/api/providers/[providerId]`）持久 500，日志为
+> `Failed to generate static paths for …: Jest worker encountered 2 child process exceptions`。
+> 三条路由均已声明 `dynamic = 'force-dynamic'` 与 `runtime = 'nodejs'`，**不是缺 dynamic 导出**；
+> 重启整个 dev 栈即恢复，重启后同一批路由全部 200。复核时若见到该 500，**先重启栈再判定**，
+> 不要记成产品缺陷；反过来，也不能用它解释任何一次**重启后仍复现**的 500。
 
 ### 6.4 未验证范围（如实列出，不写「应该没问题」）
 
 | 项 | 原因 |
 |---|---|
 | **U-1**（H-11 的 `taskkill` 子孙清理分支） | 本机 `taskkill` 被安全分类器拒绝，**未覆盖**。口径见 §1.1。**CI 跑通前不得当作「已验证通过」** |
-| 待填 | |
+| `scripts/e2e-fail.ts` **未按原样运行** | 该脚本的前置条件是「fixture 网关**进程**已停」，但 `scripts/dev-all.ts` 是监督进程 —— fixture 一退就会连带收掉 worker 与 `next dev`，栈不可能「半死」地跑这条脚本。本批改用**同错误类**（`ECONNREFUSED`）的等价手段：把 `provider.baseUrl` 指向不监听端口 `127.0.0.1:1`（与 `tests/api.spec.ts` 的 L1 用例同法），断言同一组条件（`FAILED` + `score_overall IS NULL` + 50 条全失败 + 0 条成功），跑完在 `finally` 里还原 `baseUrl`。**未覆盖的是「fixture 进程真的不在」这一前置状态本身**；该脚本仍应在能独立停 fixture 的环境（CI / 分进程部署）跑一遍 |
+| **LiteLLM sidecar 未在真容器上验证** | 本次未启动 `eval-platform-litellm`（`docker-compose` 的 `gateway` profile 未拉起），也无真实厂商 Key。现有覆盖仅为**配置产物逐字断言**（`tests/litellm-sidecar.spec.ts`：无明文 Key、无计费键名、停用厂商不进路由表）。**真实路由转发与并发限流未验证** |
+| **真实厂商网关未接入** | 全程使用本地 fixture（`本地离线自检（fixture）`，`127.0.0.1:8787`）。**真实厂商的限流、超时、非 200 响应、流式差异均未验证**；真实厂商接入后的分时计费也未与真实账单对账（`TS-2` 只保证口径来自 `model_prices`，不保证与厂商账单一致） |
+| **浏览器层 SSE 未覆盖** | 现有 SSE 覆盖为三层：服务端 route 直调（`run-stream-route.spec.ts`）、客户端状态机单测（`run-stream-client.spec.ts`）、真栈 `curl` 实读帧（见 §6.3）。**没有用例驱动真实浏览器里的 `EventSource`**，因此「半开连接 30s 判死」「代理缓冲导致帧延迟」这类**只在真实浏览器 + 真实代理下才出现**的行为未验证 |
+| **剩余固定等待未全部替换** | `tests/datasets-render-parity.spec.ts` 仍有 4 处 `waitForTimeout`（`1_200ms`×3 + `300ms`×1），位于 `page.goto` 之后、断言之前，作用是「等水合稳定」而非「等某个可判定的条件」；后续定位器走 Playwright 默认 30s 自动等待，因此未替换。**若将来出现同类冷编译翻车，应从这几处查起** |

@@ -75,6 +75,42 @@ export interface PwBrowser {
   close: () => Promise<void>;
 }
 
+/** `waitUntil` 的超时口径：**放弃**时抛错，调用方据此打印原因而不是静默放行。 */
+export interface WaitUntilOptions {
+  /** 最长等待毫秒数。 */
+  readonly timeoutMs: number;
+  /** 轮询间隔毫秒数。 */
+  readonly intervalMs?: number;
+  /** 超时时的错误文案（必须说明「等的是什么」）。 */
+  readonly message: string;
+}
+
+/**
+ * 轮询直到 `probe()` 返回 `true`，超时抛错。
+ *
+ * ## 为什么不用 `page.waitForTimeout(n)`
+ *
+ * 真栈联调暴露过：`next dev` **冷编译**一条路由要 2.8s，而测试里写的是
+ * `waitForTimeout(2_500)` —— 冷缓存下必红、热缓存下白等 2.5s。
+ * 两种都是错的：前者把「编译慢」误报成「功能坏」，后者把「已经好了」
+ * 也拖满整段等待。等**条件成立**而不是等**时间过去**。
+ *
+ * 超时**抛错**而不是返回 `false`：静默放行会让「合并前必须真机跑一遍」
+ * 这条约定失效（`B-02` 事故的同型风险）。
+ */
+export async function waitUntil(
+  probe: () => Promise<boolean>,
+  opts: WaitUntilOptions,
+): Promise<void> {
+  const interval = opts.intervalMs ?? 100;
+  const deadline = Date.now() + opts.timeoutMs;
+  for (;;) {
+    if (await probe()) return;
+    if (Date.now() >= deadline) throw new Error(opts.message);
+    await new Promise((r) => setTimeout(r, interval));
+  }
+}
+
 export interface ChromiumLauncher {
   launch: (opts: { executablePath: string }) => Promise<PwBrowser>;
 }

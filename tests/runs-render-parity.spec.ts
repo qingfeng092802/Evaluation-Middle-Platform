@@ -33,7 +33,7 @@ import { describe, expect, it } from 'vitest';
 import { DataTable } from '../components/ui/data-table';
 import { runsTableColumns } from '../components/runs/runs-table-columns';
 import { judgeRenderParity, PARITY_PAGES } from '../scripts/check-datasets-render.js';
-import { EDGE_PATH, tryLocalChromium } from '../scripts/pw-local.js';
+import { EDGE_PATH, tryLocalChromium, waitUntil } from '../scripts/pw-local.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = process.env['PG_BASE'] ?? 'http://127.0.0.1:3000';
@@ -334,8 +334,12 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
         try {
           const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
           await page.goto(`${BASE}/runs`, { waitUntil: 'networkidle' });
-          // 水合 + 首帧请求都在 networkidle 之后；再留一点余量给 React 提交。
-          await page.waitForTimeout(1_500);
+          // 等表格真的渲染出与接口条数一致的行，而不是等一个固定时长：
+          // 冷编译 / 慢机器上 1.5s 不够，热缓存下又是纯白等（见 `waitUntil` 的注释）。
+          await waitUntil(
+            async () => (await page.$$eval('table tbody tr', (els) => els.length)) > 0,
+            { timeoutMs: 30_000, message: '/runs 表格在 30s 内没有渲染出任何数据行' },
+          );
 
           renderedRows = await page.$$eval('table tbody tr', (els) => els.length);
           statusCount = await page.evaluate(() => {
@@ -460,7 +464,13 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null || !HAS_RUN_ROWS)(
             const page = await browser.newPage({ viewport });
             try {
               await page.goto(`${BASE}/runs`, { waitUntil: 'networkidle' });
-              await page.waitForTimeout(1_200);
+              await waitUntil(
+                async () => (await page.$$eval('table tbody tr', (els) => els.length)) > 0,
+                {
+                  timeoutMs: 30_000,
+                  message: `/runs 表格在 30s 内没有渲染出数据行（视口 ${String(viewport.width)}）`,
+                },
+              );
 
             // 函数体用字符串传入：tsx（esbuild `keepNames`）会给具名函数插入
             // `__name(...)`，而浏览器上下文没有这个 helper，会报 `__name is not defined`。
