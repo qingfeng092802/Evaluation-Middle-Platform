@@ -176,6 +176,12 @@ afterAll(async () => {
 beforeEach(async () => {
   await resetDatabase(databaseUrl());
   await runSeed({ silent: true });
+  // M2 · Batch 2 起种子里那条 fixture 厂商**默认停用**（交付物 6：摘除默认网关路径）。
+  // 本文件是 M1 的端到端联调用例，必须有一个可执行的厂商才能建 T1 目标、跑到终态，
+  // 所以这里**显式**把它打开 —— 这正是「主动选择」而非默认路径：
+  // 默认态下 preflight 会报「尚未配置凭证」，只有主动启用了才跑得通。
+  // 「BLOCKED_NO_PROVIDER_CREDENTIALS」那条用例随后会把它们全部置回 false。
+  await client.query(`UPDATE model_providers SET is_active = true`);
 });
 
 // ---------------------------------------------------------------------------
@@ -705,7 +711,7 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
     const { claimNextRun } = await import('../db/repo/queue.js');
     const claimed = await claimNextRun();
     expect(claimed?.id).toBe(runId);
-    await processRun(runId);
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{
       status: string;
@@ -764,8 +770,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
   it('passThreshold=0（省略时的边界）⇒ pass_rate=1.0，score_overall 仍 0.6', async () => {
     const runId = await setupRun(0);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{ metrics: { scoreOverall: number | null; passRate: number | null } }>(
       await runIdRoute.GET(req(`/api/runs/${runId}`), params({ runId })),
@@ -777,8 +783,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
   it('省略 passThreshold ⇒ pass_rate 为 NULL（不是 0）', async () => {
     const runId = await setupRun(null);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{ metrics: { scoreOverall: number | null; passRate: number | null; coverage: number | null } }>(
       await runIdRoute.GET(req(`/api/runs/${runId}`), params({ runId })),
@@ -794,8 +800,8 @@ describe('AC-6 · 一次 50 条真栈跑批', () => {
 
     const runId = await setupRun(0.5);
     const { processRun } = await import('../worker/loop.js');
-    await import('../db/repo/queue.js').then((m) => m.claimNextRun());
-    await processRun(runId);
+    const claimed = await import('../db/repo/queue.js').then((m) => m.claimNextRun());
+    await processRun(runId, claimed?.claimEpoch ?? 0);
 
     const run = await json<{
       status: string;

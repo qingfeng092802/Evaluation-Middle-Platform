@@ -96,11 +96,10 @@ describe('PlaceholderPage · 渲染里程碑原文', () => {
 const ROUTES: readonly { file: readonly string[]; key: PlaceholderKey }[] = [
   { file: ['app', 'runs', 'compare', 'page.tsx'], key: 'pg08' },
   { file: ['app', 'evaluators', 'page.tsx'], key: 'pg07' },
-  { file: ['app', 'settings', 'page.tsx'], key: 'pg09' },
 ];
 
 describe('占位路由 · 文件存在且不连数据', () => {
-  it('三个 route 文件都在', async () => {
+  it('两个 route 文件都在', async () => {
     for (const r of ROUTES) {
       const src = await readFile(resolve(ROOT, ...r.file), 'utf8');
       expect(src.length).toBeGreaterThan(0);
@@ -138,10 +137,14 @@ describe('占位路由 · 文件存在且不连数据', () => {
 // ---------------------------------------------------------------------------
 
 describe('占位路由与侧栏的关系', () => {
-  it('/evaluators 与 /settings 在侧栏里是置灰项（不是死链）', async () => {
+  it('/evaluators 仍是置灰项（M2 只交付 PG-09，PG-07 属 M4）', async () => {
     const src = await readFile(resolve(ROOT, 'lib', 'ui', 'nav.ts'), 'utf8');
-    // 两个入口都存在且都标了 disabled
     expect(src).toMatch(/href:\s*'\/evaluators'[^}]*disabled:\s*true/);
-    expect(src).toMatch(/href:\s*'\/settings'[^}]*disabled:\s*true/);
+  });
+
+  it('/settings 不再是占位：M2 已交付「模型网关」Tab，侧栏入口必须可点', async () => {
+    const src = await readFile(resolve(ROOT, 'lib', 'ui', 'nav.ts'), 'utf8');
+    expect(src).not.toMatch(/href:\s*'\/settings'[^}]*disabled:\s*true/);
+    expect(src).toContain("href: '/settings'");
   });
 });

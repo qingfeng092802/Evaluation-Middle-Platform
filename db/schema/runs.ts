@@ -80,6 +80,15 @@ export const evalRuns = pgTable(
      * NULL 表示尚未心跳，回收判定回退到 `started_at`。
      */
     heartbeatAt: timestamp('heartbeat_at', { withTimezone: true }),
+    /**
+     * **Fencing token**（M2-3，`0019_claim_epoch.sql`）。
+     *
+     * 每次 `claim_next_run()` 领取时 `+1`。worker 的心跳、结果、终态写入都带
+     * `WHERE claim_epoch = $epoch`：旧属主（GC 停顿后恢复）的所有写入自动失效，
+     * 影响行数 0 即表示「我已不是属主」，立即放弃且不写任何结果。
+     * `PENDING`（从未被领取）为 `0`。
+     */
+    claimEpoch: bigint('claim_epoch', { mode: 'number' }).notNull().default(0),
   },
   (t) => ({
     ckStatus: check(
@@ -212,5 +221,50 @@ export const evalCaseResults = pgTable(
     ixRunScore: index('ix_eval_case_results_run_score').on(t.evalRunId, t.score),
     ixRunStatus: index('ix_eval_case_results_run_status').on(t.evalRunId, t.status),
     ixRunLatency: index('ix_eval_case_results_run_latency').on(t.evalRunId, t.latencyMs),
+  }),
+);
+
+/**
+ * 网关调用幂等账本（M2-1，`0019_claim_epoch.sql`）。
+ *
+ * worker 崩溃后回收方会重跑在途的 Case：结果行幂等（`UNIQUE(eval_run_id, case_key)`），
+ * 但网关会被多调用一次 ⇒ `cost_target` 与实际账单不一致。
+ * 每次调用前先占位本表的 `idempotency_key`（唯一约束在**数据库侧**），
+ * 占位失败即复用上次用量、不再调用。
+ *
+ * ⚠️ **本表的不可变语义与其它表不同**：`DELETE` 由触发器拒绝，但 `UPDATE` **允许**——
+ * 占位发生在调用之前（那时还没有用量），真实用量必须调用成功后回填。
+ * 回填只允许「`0` → 实际值」一次，由 `trg_gateway_idempotency_usage_once` 把关。
+ * 若在此处加 `disabled`/软删列或让应用侧直接写 `tokens_*`，就绕过了那条触发器的前提。
+ */
+export const gatewayIdempotency = pgTable(
+  'gateway_idempotency',
+  {
+    id: uuid('id').primaryKey().default(sql`gen_random_uuid()`),
+    /** 派生键 `${run_id}:${case_key}:${attempt_kind}`。**不存明文 API Key**。 */
+    idempotencyKey: text('idempotency_key').notNull(),
+    evalRunId: uuid('eval_run_id')
+      .notNull()
+      .references(() => evalRuns.id, { onDelete: 'restrict' }),
+    caseKey: text('case_key').notNull(),
+    /** `target`（被测模型）/ `judge`（裁判模型）。 */
+    attemptKind: text('attempt_kind').notNull(),
+    /** 首次调用后回填；回填一次后不可再改（触发器强制）。 */
+    tokensIn: integer('tokens_in').notNull().default(0),
+    tokensOut: integer('tokens_out').notNull().default(0),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => ({
+    uxKey: uniqueIndex('uq_gateway_idempotency_key').on(t.idempotencyKey),
+    ckKind: check(
+      'ck_gateway_idempotency_kind',
+      sql`${t.attemptKind} IN ('target', 'judge')`,
+    ),
+    ckTokens: check(
+      'ck_gateway_idempotency_tokens',
+      sql`${t.tokensIn} >= 0 AND ${t.tokensOut} >= 0`,
+    ),
+    /** 按 run 查账（报告里标注「该 run 发生过回收」时用）。 */
+    ixRun: index('idx_gateway_idempotency_run').on(t.evalRunId),
   }),
 );

@@ -14,6 +14,13 @@ export interface ClaimedRun {
   readonly targetVersionId: string;
   readonly concurrency: number;
   readonly totalCases: number;
+  /**
+   * **Fencing token**（M2-3）。本次领取的代次，`claim_next_run()` 每次 `+1`。
+   *
+   * worker 必须把它一路带着：心跳、结果写入、终态更新都传 `WHERE claim_epoch = $epoch`。
+   * 旧属主（GC 停顿后恢复）拿着过期的 epoch，所有写入影响 0 行 ⇒ 立即放弃。
+   */
+  readonly claimEpoch: number;
 }
 
 /** 领取一条 `PENDING` run；没有则返回 `null`。 */
@@ -24,7 +31,8 @@ export async function claimNextRun(): Promise<ClaimedRun | null> {
     target_version_id: string;
     concurrency: number;
     total_cases: number;
-  }>(`SELECT id, dataset_version_id, target_version_id, concurrency, total_cases
+    claim_epoch: string;
+  }>(`SELECT id, dataset_version_id, target_version_id, concurrency, total_cases, claim_epoch
         FROM claim_next_run()`);
   if (!row) return null;
   return {
@@ -33,6 +41,8 @@ export async function claimNextRun(): Promise<ClaimedRun | null> {
     targetVersionId: row.target_version_id,
     concurrency: row.concurrency,
     totalCases: row.total_cases,
+    // `pg` 把 bigint 读成 string，转回 number（epoch 是领取计数，不会溢出）。
+    claimEpoch: Number(row.claim_epoch),
   };
 }
 
@@ -61,11 +71,41 @@ export async function reclaimStaleRuns(staleAfter = '10 minutes'): Promise<numbe
  * `AND status = 'RUNNING'` 不只是防御：终态行被任何 UPDATE 碰到都会触发
  * `eval_runs_guard` 抛「row is frozen」；加上这个条件后，回收/终态竞态下
  * 心跳只会影响 0 行，不会把一条正常收尾变成错误日志。
+ *
+ * `claimEpoch` 是 **M2-3 的 fencing 判据**：`AND claim_epoch = $2` 让旧属主
+ * （GC 停顿后恢复）续不上心跳。返回 `false` 表示「我已不是属主」——
+ * 调用方必须**立即放弃该 run**，不得继续写任何结果。
  */
-export async function touchHeartbeat(runId: string): Promise<void> {
-  await query(`UPDATE eval_runs SET heartbeat_at = now() WHERE id = $1 AND status = 'RUNNING'`, [
-    runId,
-  ]);
+export async function touchHeartbeat(runId: string, claimEpoch: number): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE eval_runs
+        SET heartbeat_at = now()
+      WHERE id = $1 AND status = 'RUNNING' AND claim_epoch = $2
+      RETURNING id`,
+    [runId, claimEpoch],
+  );
+  return row !== null;
+}
+
+/**
+ * 带 fencing 的终态更新。
+ *
+ * 与 {@link touchHeartbeat} 同一判据：`claim_epoch` 不匹配 ⇒ 影响 0 行 ⇒ 返回 `false`。
+ * worker 收尾时必须先看这个返回值再决定是否继续写 Case 结果。
+ */
+export async function updateRunWithFence(
+  runId: string,
+  claimEpoch: number,
+  setClause: string,
+  params: readonly unknown[],
+): Promise<boolean> {
+  const row = await queryOne<{ id: string }>(
+    `UPDATE eval_runs SET ${setClause}
+      WHERE id = $1 AND claim_epoch = $2
+      RETURNING id`,
+    [runId, claimEpoch, ...params],
+  );
+  return row !== null;
 }
 
 /** 把 run 从 `PENDING` 推到 `RUNNING`（`claim_next_run()` 已完成，此处仅用于自检路径）。 */

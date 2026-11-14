@@ -153,6 +153,65 @@ export function computeCost(x: CostInput): number {
 }
 
 // ---------------------------------------------------------------------------
+// 连通性测试（PG-09「模型网关」Tab 的「测试连接」，`US-015`）
+// ---------------------------------------------------------------------------
+
+/**
+ * `POST /api/providers/{providerId}/probe` 的请求体。
+ *
+ * **为什么请求体可以为空**：探针默认用**已保存**的厂商配置（含密文 Key）去测，
+ * 这样用户不必为了「测一下」再输一次 Key。只有「换了 Key 想先试再存」时才传
+ * `apiKeyOverride`——此时明文只走这一次请求，不落库、不回显、不写日志。
+ *
+ * `modelId` 可选：部分厂商的 `/models` 与 `/chat/completions` 需要显式模型名。
+ */
+export const ModelProviderProbeRequest = z.object({
+  /** 临时覆盖 Key（明文）。省略 ⇒ 用库里已存的密文。 */
+  apiKeyOverride: z.string().min(1).optional(),
+  /** 临时覆盖 baseUrl。省略 ⇒ 用库里已存的。 */
+  baseUrlOverride: z.string().url().optional(),
+  /** 指定模型名做一次最小 chat 调用；省略 ⇒ 只测 `/models` 可达性。 */
+  modelId: z.string().min(1).optional(),
+});
+export type ModelProviderProbeRequest = z.infer<typeof ModelProviderProbeRequest>;
+
+/** 探针结果档位。 */
+export const ModelProviderProbeStatus = z.enum([
+  /** 连通且鉴权通过。 */
+  'OK',
+  /** 网络不可达 / DNS 失败 / 连接超时。 */
+  'UNREACHABLE',
+  /** 可达但鉴权失败（401 / 403）。 */
+  'UNAUTHORIZED',
+  /** 可达但上游 5xx。 */
+  'UPSTREAM_ERROR',
+  /** 可达但响应不符合 OpenAI 兼容形状。 */
+  'BAD_RESPONSE',
+]);
+export type ModelProviderProbeStatus = z.infer<typeof ModelProviderProbeStatus>;
+
+/**
+ * 探针响应。
+ *
+ * **不含任何 Key 片段**：连 `apiKeyMasked` 都不回——探针的用途是「通不通」，
+ * 把掩码再回一遍只会给日志多一处可泄露面。
+ *
+ * `latencyMs` 是**往返耗时**，用于 PG-09 的「连接延迟」展示；
+ * `errorMessage` 只在非 `OK` 时有值，且必须是**上游原话的截断**，
+ * 不得拼接本地路径、栈信息或任何凭据。
+ */
+export const ModelProviderProbeResult = z.object({
+  status: ModelProviderProbeStatus,
+  /** 往返耗时（毫秒）。`UNREACHABLE` 时为 `null`（没建立起连接）。 */
+  latencyMs: z.number().int().min(0).nullable(),
+  /** 上游原话截断（≤ 500 字符）；`OK` 时为 `null`。 */
+  errorMessage: z.string().max(500).nullable(),
+  /** 探针时刻，供 UI 显示「刚刚测过」。 */
+  probedAt: IsoDateTime,
+});
+export type ModelProviderProbeResult = z.infer<typeof ModelProviderProbeResult>;
+
+// ---------------------------------------------------------------------------
 // 成本台账（PG-10，P1）
 // ---------------------------------------------------------------------------
 

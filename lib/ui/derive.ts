@@ -119,7 +119,10 @@ export type EmptyStateKey =
   | 'blockedNoEvaluators'
   | 'blockedNoCredentials'
   | 'targetVersionHint'
-  | 'reproducibilityNotice';
+  | 'reproducibilityNotice'
+  /** `PG-09` 模型网关：还没有任何厂商 / 还没有任何报价（M2 · Batch 2）。 */
+  | 'providers'
+  | 'prices';
 
 export interface EmptyStateAction {
   readonly label: string;
@@ -163,6 +166,14 @@ const EMPTY_STATES: Readonly<Record<EmptyStateKey, EmptyState>> = {
   blockedNoCredentials: { message: '尚未配置模型网关凭证，无法发起评测。', actions: [] },
   targetVersionHint: { message: '保存后将生成 v2，历史运行仍引用 v1', actions: [] },
   reproducibilityNotice: { message: 'EvalRun 可解释，不可复现。', actions: [] },
+  providers: {
+    message: '还没有配置任何模型厂商。请先新增一家厂商并保存 API Key，之后才能发起评测。',
+    actions: [],
+  },
+  prices: {
+    message: '还没有报价。成本只能由本表单价计算，请至少为要使用的模型新增一行单价。',
+    actions: [],
+  },
 };
 
 export function emptyState(key: EmptyStateKey): EmptyState {

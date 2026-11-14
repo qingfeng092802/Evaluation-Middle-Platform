@@ -6,7 +6,8 @@
 > 规则依据：`docs/工程规则.md` 第 1 节「单一事实源原则」。
 >
 > 建立日期：2026-11-07 · 状态：**已确认**
-> **表数量：13 张业务表 + 1 张门禁执行留痕表 + 1 张人工标注留痕表 = 15 张。**
+> **表数量：13 张业务表 + 1 张门禁执行留痕表 + 1 张人工标注留痕表 + 1 张网关幂等账本 = 16 张。**
+> （**2026-11-12 M2 Batch 1 增补第 16 张 `gateway_idempotency`**，见 §2.16。）
 > （需求方口头为「13 张」，因 `targets` / `target_versions` 原为一组、展开后实为 14 张；
 > 加上 2026-11-07 拍板新增的 `case_human_labels`（`OUT-5` 的物理落点），合计 **15 张**。以本文件为准。）
 >
@@ -76,9 +77,11 @@
 | 13 | `regression_gates` | `0013_regression_gates.sql` | 否 |
 | 14 | `gate_evaluations` | `0014_gate_evaluations.sql` | **是** |
 | 15 | `case_human_labels` | `0015_case_human_labels.sql` | **是**（只增不改） |
+| 16 | `gateway_idempotency` | `0019_claim_epoch.sql` | **不可删**；用量只允许「占位 → 回填」一次 |
 | — | 不可变触发器 | `0016_immutability_triggers.sql` | — |
 | — | 队列辅助函数 | `0017_queue_functions.sql` | — |
 | — | 心跳租约（`heartbeat_at` + 回收判据） | `0018_heartbeat_lease.sql` | — |
+| — | Fencing token（`claim_epoch`）+ 幂等账本 | `0019_claim_epoch.sql` | — |
 
 ### 1.1 ER 关系图
 
@@ -498,6 +501,12 @@ CREATE TABLE eval_runs (
   -- 租约心跳（0018）：worker 处理期间按 TTL/3 续写；NULL = 尚未心跳，回收时回退到 started_at
   heartbeat_at          timestamptz,
 
+  -- Fencing token（M2-3，0019）：每次 claim_next_run() 领取时 +1。
+  -- worker 的所有写入（心跳 / 结果 / 终态）都带 WHERE claim_epoch = $epoch，
+  -- 旧属主（GC 停顿后恢复）手里是过期值 ⇒ 影响 0 行 ⇒ 立即放弃，不会二次执行。
+  -- 单调递增，回收（退回 PENDING）时**不回退**。PENDING（从未领取）为 0。
+  claim_epoch           bigint         NOT NULL DEFAULT 0,
+
   CONSTRAINT ck_eval_runs_status CHECK (status IN
     ('PENDING','RUNNING','COMPLETED','PARTIAL_FAILED','FAILED','CANCELLED')),
   CONSTRAINT ck_eval_runs_conc   CHECK (concurrency > 0),
@@ -742,6 +751,58 @@ CREATE INDEX ix_case_human_labels_label  ON case_human_labels (label, labeled_at
 
 ---
 
+### 2.16 `gateway_idempotency` — 网关调用幂等账本（M2-1，`0019_claim_epoch.sql`）
+
+> **要解决的事**：worker 真崩溃时，回收方会重跑崩溃瞬间**在途**的 Case。
+> 结果行本身是幂等的（`UNIQUE(eval_run_id, case_key)`），
+> 但**网关被多调用一次** ⇒ `cost_target` 与实际账单不一致。
+> `cost_target` 是产品承诺的读数，不能只做到「接近」。
+
+```sql
+CREATE TABLE gateway_idempotency (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+
+  -- 派生的幂等键：`${run_id}:${case_key}:${attempt_kind}`。全局唯一。
+  idempotency_key text        NOT NULL,
+
+  eval_run_id     uuid        NOT NULL REFERENCES eval_runs (id),
+  case_key        text        NOT NULL,
+
+  -- 调用类别：被测模型 / 裁判模型。分列是为了让「哪一类被重复调用」可查。
+  attempt_kind    text        NOT NULL,
+
+  -- 首次调用时写入的用量快照。回收方读到已有行时**直接复用**这份用量，
+  -- 不重新调用网关 —— 这是「只计费一次」的物理保证。
+  tokens_in       integer     NOT NULL DEFAULT 0,
+  tokens_out      integer     NOT NULL DEFAULT 0,
+
+  created_at      timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT uq_gateway_idempotency_key UNIQUE (idempotency_key),
+  CONSTRAINT ck_gateway_idempotency_kind CHECK (attempt_kind IN ('target', 'judge')),
+  CONSTRAINT ck_gateway_idempotency_tokens CHECK (tokens_in >= 0 AND tokens_out >= 0)
+);
+
+CREATE INDEX idx_gateway_idempotency_run ON gateway_idempotency (eval_run_id);
+```
+
+**设计说明**：
+
+| 决策 | 理由 |
+|---|---|
+| **唯一约束在数据库侧，不在应用侧** | 占位用 `INSERT ... ON CONFLICT (idempotency_key) DO NOTHING RETURNING id` 一条语句完成「占位或读旧值」，不存在「先 SELECT 再 INSERT」的竞态窗口。两个 worker 同时进来只有一个能拿到行。 |
+| **不存明文 API Key** | 键只由 `run_id + case_key + attempt_kind` 派生。凭据永不落库（`工程规则` §9）。 |
+| **`attempt_kind` 分 `target` / `judge`** | 同一 Case 的两类调用各自独立占位；哪一类被重复调用在账本里可查。 |
+| **禁止 `no_update`，改为「一次性回填」** | 占位发生在网关调用**之前**（那时还不知道用量），真实用量必须在调用成功后回填到同一行。若禁止 `UPDATE`，回填写不进去 ⇒ 复用方读到 0 ⇒ **少计费**，比重复计费更难发现。故不可变语义拆成两条：**不可删** + **用量只允许 `0 → 实际值` 回填一次**。 |
+| 与 `PT-2` 不冲突 | `PT-2` 防的是**历史实体被篡改**；用量回填是「把一次调用的结果记完」，不是改历史。 |
+
+> **触发器的特殊性**：这是全库唯一**同时**有 `no_delete` 和 `usage_once` 两张触发器的表。
+> `trg_gateway_idempotency_usage_once` 拒绝任何「已回填后再改」，
+> 也拒绝改动 4 个身份列（`idempotency_key` / `eval_run_id` / `case_key` / `attempt_kind`）。
+> 因此它**不进 §3.2 的完全不可变循环**（那张表是 `UPDATE`/`DELETE` 双拒），而是单列一条。
+
+---
+
 ## 3. 不可变触发器（`0016_immutability_triggers.sql`）
 
 > **`PT-2` 不能只写在文档里，必须由数据库兜底。**
@@ -853,17 +914,21 @@ CREATE TRIGGER trg_baselines_guard
 
 ---
 
-## 4. 队列辅助函数（`0017_queue_functions.sql` 领取 / `0018_heartbeat_lease.sql` 回收）
+## 4. 队列辅助函数（`0017_queue_functions.sql` 领取 / `0018_heartbeat_lease.sql` 回收 / `0019_claim_epoch.sql` fencing）
 
 ```sql
 -- 领取下一个待执行运行（多 worker 安全）
+-- 0019 起：领取时 claim_epoch + 1（fencing token），返回值从 `eval_runs` 改为
+-- `SETOF eval_runs`（复合类型在空队列上会返回一行全 NULL，worker 判不出空）。
 CREATE OR REPLACE FUNCTION claim_next_run()
-RETURNS eval_runs
+RETURNS SETOF eval_runs
 LANGUAGE plpgsql AS $$
 DECLARE r eval_runs;
 BEGIN
   UPDATE eval_runs
-     SET status = 'RUNNING', started_at = now()
+     SET status = 'RUNNING',
+         started_at = now(),
+         claim_epoch = claim_epoch + 1
    WHERE id = (
      SELECT id FROM eval_runs
       WHERE status = 'PENDING'
@@ -872,10 +937,18 @@ BEGIN
       LIMIT 1
    )
   RETURNING * INTO r;
-  RETURN r;
+
+  IF r.id IS NULL THEN
+    RETURN;          -- 对 SETOF 即「零行」
+  END IF;
+  RETURN NEXT r;
 END;
 $$;
 ```
+
+> **为什么 `claim_epoch + 1` 放在 `UPDATE` 里而不是应用层**：这必须是**领取动作的一部分**，
+> 与 `FOR UPDATE SKIP LOCKED` 同一事务。放在应用层就等于「先领再改」，中间存在窗口，
+> 两个 worker 可能拿到同一个 epoch，fencing 就失效了。
 
 > `NOTIFY` 在应用层发出，不封装进 SQL 函数 —— 便于在事务提交后触发（PG 的 `NOTIFY` 在事务内排队、提交时投递，行为正确但时机在应用层更可控）。
 
@@ -899,6 +972,7 @@ BEGIN
        SET status = 'PENDING',
            started_at = NULL,
            heartbeat_at = NULL
+           -- claim_epoch 刻意不回退：它单调递增，旧属主永远拿不回匹配权。
      WHERE status = 'RUNNING'
        AND GREATEST(started_at, heartbeat_at) < now() - p_stale_after
     RETURNING id
@@ -918,6 +992,16 @@ $$;
 > 召回时必须同时把 `started_at` 与 `heartbeat_at` 置回 `NULL`，否则下一次回收会把刚领走的新任务误判为僵尸。
 > 已完成写入 `eval_case_results` 的 Case 不会被重算（`UNIQUE(eval_run_id, case_key)` 保证幂等重试）。
 > `ix_eval_runs_running_started`（§2.9）就是为这条 `UPDATE` 建的。
+
+> **`claim_epoch` 为什么不回退（0019）**：它是单调递增的**代次**，不是状态。
+> 若回收时把它减回去，一个在回收之前就已停顿的旧属主，手里的 epoch 可能**重新匹配**上，
+> fencing 就白做了。回收只清 `started_at` / `heartbeat_at`（表示"没人持有"），
+> epoch 继续往前走，下一次领取再 `+1`。
+>
+> **`heartbeat_at` 与 `claim_epoch` 的分工**：`heartbeat_at` 决定**能不能回收**
+> （"这个人还活着吗"）；`claim_epoch` 决定**回收后谁能写**（"你到底是不是当前属主"）。
+> 两者缺一：只有心跳 ⇒ 长停顿的旧属主醒来能把它重新点亮（脑裂）；只有 epoch ⇒ 死掉的
+> run 永远卡在 `RUNNING`。**M1 有前者，M2 Batch 1 补齐后者。**
 
 ---
 
@@ -960,7 +1044,7 @@ $$;
 | T-07 | 第二条 `CONFIRMED` 基线插入失败 | 先插一条 `CONFIRMED`，再插 → 唯一索引冲突 |
 | T-08 | `baselines` 已决行再决抛异常 | `CONFIRMED` 后改 `REJECTED` → 抛异常 |
 | T-09 | `dataset_cases` 同版本重复 `case_key` 插入失败 | 唯一约束冲突 |
-| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **17** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES` |
+| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **19** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17 + `gateway_idempotency` × 2 = **19**）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES` |
 | T-11 | `cost_total` 生成列随分列自动更新 | `UPDATE` 分列 → 断言 `cost_total = target + judge` |
 | T-12 | `ck_eval_runs_failed_null_score` 生效 | 置 `FAILED` 且 `score_overall` 非 NULL → 抛异常 |
 | T-13 | `reclaim_stale_runs()` 把超时 `RUNNING` 退回 `PENDING` | 造一行 `RUNNING` + `started_at` 早于阈值（`heartbeat_at` 为 NULL）→ 调用函数 → 断言状态与 `started_at IS NULL` |
@@ -988,3 +1072,4 @@ $$;
 | 2026-11-07 | **表数量拍板 14 → 15：新增 §2.15 `case_human_labels`** | 需求方拍板：① 坚决维持 14 张业务表设计（7 张装不下版本快照 / 算子快照 / 成本分账）；② **同意新增第 15 张表 `case_human_labels`（只增不改）**，以满足 `OUT-5` 的字段扩展性，同时绝不破坏 `eval_case_results` 的不可变性。连带变更：§0 表数量 14→15；§1 迁移顺序新增 `0015_case_human_labels.sql`，触发器迁移改 `0016`、队列函数改 `0017`；§1.1 ER 图加关系；§1.2 索引策略补两条；§3.2 不可变循环 6→7 张表；§5 红线补 `HL-1`、`IM-1` 改 7 张；§6 `T-10` 触发器 15→**17**，新增 `T-19`…`T-22`；§2.11 的「待拍板」改为已拍板。 |
 | 2026-11-07 | **SSE 事件回放拍板（`snapshot_only` 定稿）** | 需求方拍板：**不做 `Last-Event-ID` 事件回放**，不加环形缓冲。重连一律先拉全量快照（`GET /api/runs/:id`）再续订 `/stream`。相关文档的「待拍板」措辞已全部退休（见 `technical-solution.md` §3.4、`src/contracts/README.md`）。本文件无 DDL 变更。 |
 | 2026-11-09 | **心跳租约（`0018_heartbeat_lease.sql`，#6 方案 A）** | 缺陷：`reclaim_stale_runs()` 只看 `started_at`，任何耗时超过阈值的**正常** run 都被另一 worker 抢走并二次执行；行级幂等挡得住重复行，挡不住重复的网关调用（重复计费 vs. `cost_target` 只记一次）。变更：§2.9 `eval_runs` 增 `heartbeat_at timestamptz`（可空）；§4.1 判定改为 `GREATEST(started_at, heartbeat_at) < now() - p_stale_after`，回收时同时清空 `heartbeat_at`；`heartbeat_at IS NULL` 回退到 `started_at`，T-13/T-14 语义不变。配套：worker 按 `WORKER_STALE_AFTER / 3` 续约（间隔由 TTL 派生，不单独配置）；down 脚本置于 `db/migrations/down/0018_heartbeat_lease.down.sql`（非递归扫描 ⇒ 不会被 `migrate()` 自动执行），已用影子库验证「前滚 → 回滚 → 再前滚」。 |
+| 2026-11-12 | **M2 Batch 1：fencing token + 网关幂等账本（`0019_claim_epoch.sql`）** | ① **M2-3 fencing**：§2.9 `eval_runs` 增 `claim_epoch bigint NOT NULL DEFAULT 0`；`claim_next_run()` 领取时 `claim_epoch + 1`，返回类型改为 `SETOF eval_runs`（空队列不再返回全 NULL 行）；`reclaim_stale_runs()` **不回退** epoch（单调性即安全前提）。worker 的心跳 / 结果 / 终态写入全部带 `WHERE claim_epoch = $epoch`，旧属主写入影响 0 行 ⇒ 立即放弃。**补的是 0018 留下的那个洞**：`heartbeat_at` 只回答「能不能回收」，回答不了「回收后谁能写」—— 长停顿（非死亡）的旧属主醒来会把它重新点亮。② **M2-1 幂等账本**：新增 §2.16 第 16 张表 `gateway_idempotency`（`UNIQUE(idempotency_key)`，键派生自 `run_id + case_key + attempt_kind`，**不存明文 Key**）；不可变语义为**不可删** + **用量只允许 `0 → 实际值` 回填一次**（刻意不加 `no_update`：占位在调用之前，回填补不进去会导致**少计费**，比重复计费更难发现）。③ §6 `T-10` 触发器 17 → **19**（`trg_gateway_idempotency_no_delete` + `trg_gateway_idempotency_usage_once`）。down 脚本：`db/migrations/down/0019_claim_epoch.down.sql`。 |

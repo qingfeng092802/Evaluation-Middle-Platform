@@ -6,10 +6,15 @@ import {
   DatasetListResponse,
   DatasetVersionListResponse,
   EvalRunDetail,
+  ModelProviderListResponse,
   RunPreflight,
   TargetListResponse,
 } from '@eval-platform/contracts';
-import type { RunPreflight as RunPreflightType, Target } from '@eval-platform/contracts';
+import type {
+  ModelProvider,
+  RunPreflight as RunPreflightType,
+  Target,
+} from '@eval-platform/contracts';
 import { AppShellWithTheme } from '@/components/shell/app-shell';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -21,11 +26,16 @@ import { blockerText } from '@/lib/ui/derive';
 import { needsRetrieval } from '@/lib/preflight';
 import { modelCell, promptSummary, targetKindLabel } from '@/lib/ui/targets';
 import {
+  JUDGE_OPERATOR_SPEC,
   RULE_OPERATOR_SPECS,
-  buildEvaluatorInputs,
+  buildRunEvaluators,
   defaultConfigOf,
-  evaluatorKeysParam,
+  defaultJudgeDraft,
+  judgeConfigError,
+  judgeScaleThresholdToNormalized,
+  judgeWarnings,
   operatorConfigError,
+  type JudgeDraft,
   type RuleField,
   type SelectedEvaluator,
 } from '@/lib/ui/wizard';
@@ -34,12 +44,11 @@ import { versionCell } from '@/lib/ui/datasets';
 /**
  * `PG-02` · 发起评测向导（整页 4 步）。
  *
- * 数据全部来自真实接口：`/api/datasets*`、`/api/targets*`、`/api/runs/preflight`、
- * `POST /api/runs`。**没有一行写死的 Case / Target / 评测结果**。
+ * 数据全部来自真实接口：`/api/datasets*`、`/api/targets*`、`/api/providers`、
+ * `/api/runs/preflight`、`POST /api/runs`。**没有一行写死的 Case / Target / 评测结果**。
  *
- * 第 3 步只渲染「确定性规则算子」区块（`[FE-03]` 交付物 2）：`judge` 在 M1
- * 既没有默认配置也没有实现（`lib/operators/index.ts` 刻意不注册），
- * 放一个置灰的「LLM 裁判」标签页只会让人以为差一步就能用。
+ * 第 3 步渲染两块：六个「确定性规则算子」（M1）+「LLM 裁判算子」（M2 · Batch 2）。
+ * 裁判单独一块而不是混进规则算子清单，理由见 `lib/ui/wizard.ts` 文件头。
  *
  * 三条阻塞校验**不在本页重新实现**：页面把已选算子传给
  * `GET /api/runs/preflight`，由 `lib/preflight/index.ts`（服务端 `POST /api/runs`
@@ -53,13 +62,26 @@ export default function NewRunPage(): React.ReactElement {
   const [datasetVersionId, setDatasetVersionId] = React.useState<string | null>(null);
   const [targetVersionId, setTargetVersionId] = React.useState<string | null>(null);
   const [selected, setSelected] = React.useState<readonly SelectedEvaluator[]>([]);
+  /** `null` = 本次运行不含裁判算子。 */
+  const [judge, setJudge] = React.useState<JudgeDraft | null>(null);
   const [name, setName] = React.useState('');
   const [concurrency, setConcurrency] = React.useState('4');
 
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  const keysParam = evaluatorKeysParam(selected);
+  const providers = useApi(ModelProviderListResponse, '/api/providers');
+
+  const evaluators = React.useMemo(
+    () => buildRunEvaluators({ judge, rules: selected }),
+    [judge, selected],
+  );
+
+  // preflight 要知道**全部**算子 key（含 judge）—— 只传规则算子会让「选了裁判」
+  // 在后端不可见，于是 `hasEvaluators` 恒为 false 的假象不会出现，但用户也得不到
+  // 「裁判厂商不可用」这类提示。这里用最终要提交的同一份数组。
+  const keysParam =
+    evaluators.length === 0 ? null : evaluators.map((e) => e.config.key).join(',');
   const preflight = useApi(
     RunPreflight,
     datasetVersionId === null
@@ -67,10 +89,14 @@ export default function NewRunPage(): React.ReactElement {
       : `/api/runs/preflight?datasetVersionId=${datasetVersionId}${keysParam === null ? '' : `&evaluatorKeys=${keysParam}`}`,
   );
 
+  const judgeReady = judge === null || judgeConfigError(judge) === null;
+
   const perStepReady = [
     datasetVersionId !== null,
     targetVersionId !== null,
-    selected.length > 0 && selected.every((s) => operatorConfigError(s) === null),
+    evaluators.length > 0 &&
+      selected.every((s) => operatorConfigError(s) === null) &&
+      judgeReady,
     name.trim() !== '' &&
       Number(concurrency) >= 1 &&
       preflight.data?.canStart === true,
@@ -88,7 +114,7 @@ export default function NewRunPage(): React.ReactElement {
         datasetVersionId,
         targetVersionId,
         concurrency: Number(concurrency),
-        evaluators: buildEvaluatorInputs(selected),
+        evaluators,
       });
       router.push(`/runs/${run.id}`);
     } catch (e) {
@@ -146,6 +172,9 @@ export default function NewRunPage(): React.ReactElement {
           <StepEvaluators
             selected={selected}
             onChange={setSelected}
+            judge={judge}
+            onJudgeChange={setJudge}
+            providers={providers.data?.items ?? []}
             retrievalReadiness={preflight.data?.retrievalReadiness ?? null}
           />
         ) : null}
@@ -382,16 +411,22 @@ function TargetOption({
 }
 
 // ---------------------------------------------------------------------------
-// 步骤 3 · 配置评测算子（仅确定性规则算子）
+// 步骤 3 · 配置评测算子（规则算子 + LLM 裁判算子）
 // ---------------------------------------------------------------------------
 
 function StepEvaluators({
   selected,
   onChange,
+  judge,
+  onJudgeChange,
+  providers,
   retrievalReadiness,
 }: {
   selected: readonly SelectedEvaluator[];
   onChange: (next: readonly SelectedEvaluator[]) => void;
+  judge: JudgeDraft | null;
+  onJudgeChange: (next: JudgeDraft | null) => void;
+  providers: readonly ModelProvider[];
   retrievalReadiness: RunPreflightType['retrievalReadiness'] | null;
 }): React.ReactElement {
   // 「有没有勾检索类算子」不在这里重写一遍：`needsRetrieval` 是 `lib/preflight` 的
@@ -417,55 +452,198 @@ function StepEvaluators({
     onChange(selected.map((s) => (s.key === key ? { ...s, ...next } : s)));
   }
 
+  const totalCount = selected.length + (judge === null ? 0 : 1);
+
+  return (
+    <div className="flex flex-col gap-3">
+      <Card>
+        <CardHeader>
+          <CardTitle>3 · 配置评测算子</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            确定性规则算子，参数确定、结果可复现。检索类算子需要该版本有完整检索标注。
+          </p>
+
+          {/*
+            只在**真的勾了检索类算子**、且该版本不是全量标注时才提示。
+            无条件显示会让「一个检索算子都没选」的用户看到一句与本次配置无关的告警。
+            文案走 `blockerText()`，即 `pages-and-flows.md` §5 的原文。
+          */}
+          {retrievalBlocked && retrievalReadiness !== null ? (
+            <div className="rounded-md border border-eval-warn bg-eval-warn-bg px-3 py-2 text-xs text-eval-warn">
+              {blockerText('BLOCKED_NO_RETRIEVAL_ANNOTATION').message}
+              <span className="num ml-1">
+                （{retrievalReadiness.annotatedCount} / {retrievalReadiness.totalCount} 条已标注）
+              </span>
+            </div>
+          ) : null}
+
+          <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+            {RULE_OPERATOR_SPECS.map((spec) => {
+              const sel = selected.find((s) => s.key === spec.key);
+              return (
+                <div key={spec.key} className="flex flex-col gap-2 px-3 py-2">
+                  <label className="flex cursor-pointer items-center gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={sel !== undefined}
+                      onChange={() => toggle(spec.key)}
+                    />
+                    <span className="font-medium text-foreground">{spec.label}</span>
+                    <span className="text-muted-foreground">{spec.hint}</span>
+                  </label>
+                  {sel === undefined ? null : (
+                    <EvaluatorParams spec={spec} selected={sel} onPatch={(p) => patch(spec.key, p)} />
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {totalCount === 0 ? (
+            <p className="text-xs text-eval-fail">{blockerText('BLOCKED_NO_EVALUATORS').message}</p>
+          ) : null}
+        </CardContent>
+      </Card>
+
+      <JudgeBlock judge={judge} onChange={onJudgeChange} providers={providers} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// 步骤 3 的第二块 · LLM 裁判算子（M2 · Batch 2 · 交付物 3）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「LLM 裁判算子」配置区块。
+ *
+ * 字段与 `JUDGE_OPERATOR_SPEC.fields` 一一对应；这里不按 spec 遍历渲染，
+ * 因为每个字段的控件形态差别很大（厂商下拉 / 模型文本 / 多行 Prompt / 量表档位），
+ * 强行抽象出一个通用渲染器反而会更难读。`JUDGE_OPERATOR_SPEC` 的用途是
+ * 给测试与文档一份**可断言**的字段清单（`tests/wizard-judge.spec.ts`）。
+ */
+function JudgeBlock({
+  judge,
+  onChange,
+  providers,
+}: {
+  judge: JudgeDraft | null;
+  onChange: (next: JudgeDraft | null) => void;
+  providers: readonly ModelProvider[];
+}): React.ReactElement {
+  const enabled = judge !== null;
+  const firstProvider = providers[0]?.id ?? '';
+  const err = judge === null ? null : judgeConfigError(judge);
+  const warns = judge === null ? [] : judgeWarnings(judge);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>3 · 配置评测算子</CardTitle>
+        <CardTitle>{JUDGE_OPERATOR_SPEC.label}</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
-        <p className="text-xs text-muted-foreground">
-          当前仅支持「确定性规则算子」。LLM 裁判算子属 M2 能力。
-        </p>
+        <label className="flex cursor-pointer items-center gap-2 text-xs">
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(e) =>
+              onChange(e.target.checked ? defaultJudgeDraft(firstProvider) : null)
+            }
+          />
+          <span className="font-medium text-foreground">{JUDGE_OPERATOR_SPEC.hint}</span>
+        </label>
 
-        {/*
-          只在**真的勾了检索类算子**、且该版本不是全量标注时才提示。
-          无条件显示会让「一个检索算子都没选」的用户看到一句与本次配置无关的告警。
-          文案走 `blockerText()`，即 `pages-and-flows.md` §5 的原文。
-        */}
-        {retrievalBlocked && retrievalReadiness !== null ? (
-          <div className="rounded-md border border-eval-warn bg-eval-warn-bg px-3 py-2 text-xs text-eval-warn">
-            {blockerText('BLOCKED_NO_RETRIEVAL_ANNOTATION').message}
-            <span className="num ml-1">
-              （{retrievalReadiness.annotatedCount} / {retrievalReadiness.totalCount} 条已标注）
-            </span>
-          </div>
-        ) : null}
-
-        <div className="flex flex-col divide-y divide-border rounded-md border border-border">
-          {RULE_OPERATOR_SPECS.map((spec) => {
-            const sel = selected.find((s) => s.key === spec.key);
-            return (
-              <div key={spec.key} className="flex flex-col gap-2 px-3 py-2">
-                <label className="flex cursor-pointer items-center gap-2 text-xs">
-                  <input
-                    type="checkbox"
-                    checked={sel !== undefined}
-                    onChange={() => toggle(spec.key)}
-                  />
-                  <span className="font-medium text-foreground">{spec.label}</span>
-                  <span className="text-muted-foreground">{spec.hint}</span>
-                </label>
-                {sel === undefined ? null : (
-                  <EvaluatorParams spec={spec} selected={sel} onPatch={(p) => patch(spec.key, p)} />
-                )}
+        {judge === null ? null : (
+          <div className="flex flex-col gap-3 border-t border-border pt-3">
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="flex w-[200px] flex-col gap-1">
+                <Label htmlFor="judge-provider">裁判模型厂商</Label>
+                <Select
+                  id="judge-provider"
+                  value={judge.modelProviderId}
+                  onChange={(e) => onChange({ ...judge, modelProviderId: e.target.value })}
+                >
+                  {providers.length === 0 ? <option value="">（尚未配置厂商）</option> : null}
+                  {providers.map((p) => (
+                    <option key={p.id} value={p.id} disabled={!p.isActive}>
+                      {p.name}
+                      {p.isActive ? '' : '（已停用）'}
+                    </option>
+                  ))}
+                </Select>
               </div>
-            );
-          })}
-        </div>
 
-        {selected.length === 0 ? (
-          <p className="text-xs text-eval-fail">{blockerText('BLOCKED_NO_EVALUATORS').message}</p>
-        ) : null}
+              <div className="flex w-[180px] flex-col gap-1">
+                <Label htmlFor="judge-model">裁判模型</Label>
+                <Input
+                  id="judge-model"
+                  value={judge.modelId}
+                  placeholder="如 gpt-4o-mini"
+                  onChange={(e) => onChange({ ...judge, modelId: e.target.value })}
+                  className="num-mono"
+                />
+              </div>
+
+              <div className="flex w-[110px] flex-col gap-1">
+                <Label htmlFor="judge-scale">量表上界</Label>
+                <Select
+                  id="judge-scale"
+                  value={String(judge.scaleMax)}
+                  onChange={(e) =>
+                    onChange({ ...judge, scaleMax: Number(e.target.value) as 1 | 5 | 10 })
+                  }
+                  className="num"
+                >
+                  <option value="1">1 分制</option>
+                  <option value="5">5 分制</option>
+                  <option value="10">10 分制</option>
+                </Select>
+              </div>
+
+              <div className="flex w-[130px] flex-col gap-1">
+                <Label htmlFor="judge-pass">通过阈值（量表内）</Label>
+                <Input
+                  id="judge-pass"
+                  type="number"
+                  min={0}
+                  max={judge.scaleMax}
+                  step={1}
+                  value={String(judge.passScoreOnScale)}
+                  onChange={(e) => onChange({ ...judge, passScoreOnScale: Number(e.target.value) })}
+                  className="num"
+                />
+                {/*
+                  把归一化后的值显式显示出来：用户填的是「量表内分」，
+                  而提交给服务端的是 0.6 这种归一化值。不显示换算结果，
+                  用户会以为阈值就是自己填的那个数，后续对不上时报错难查。
+                */}
+                <span className="num text-2xs text-muted-foreground">
+                  = {judgeScaleThresholdToNormalized(judge.passScoreOnScale, judge.scaleMax).toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <Label htmlFor="judge-prompt">评分 Prompt</Label>
+              <Textarea
+                id="judge-prompt"
+                value={judge.promptTemplate}
+                onChange={(e) => onChange({ ...judge, promptTemplate: e.target.value })}
+                className="min-h-[110px] font-mono text-xs"
+                placeholder="支持 {{input}} / {{output}} / {{reference}} 占位符"
+              />
+            </div>
+
+            {err !== null ? <p className="text-2xs text-eval-fail">{err}</p> : null}
+            {warns.map((w) => (
+              <p key={w} className="text-2xs text-eval-warn">
+                {w}
+              </p>
+            ))}
+          </div>
+        )}
       </CardContent>
     </Card>
   );

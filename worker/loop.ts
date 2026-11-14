@@ -12,7 +12,6 @@
  *  4. **每落一条 Case 就刷新计数字段**，否则运行中进度条永远是 `0 / N`（#1）；
  *  5. `SIGTERM` 时**跑完当前批次再退**，不在写入一半时硬中断。
  */
-import pLimit from 'p-limit';
 import { claimNextRun, reclaimStaleRuns, touchHeartbeat } from '../db/repo/queue.js';
 import {
   finalizeRun,
@@ -26,6 +25,9 @@ import { getT1ExecutionConfig } from '../db/repo/targets.js';
 import { getProviderForExecution } from '../db/repo/modelProviders.js';
 import { insertResult, listDoneCaseKeys } from '../db/repo/evalCaseResults.js';
 import { executeCase, specFromRunEvaluator } from '../lib/runner/execute-case.js';
+import { effectiveConcurrency, providerLimiter } from '../lib/runner/concurrency.js';
+import { createJudgeChat } from '../lib/runner/judge-chat.js';
+import type { JudgeChat } from '../lib/operators/judge.js';
 import type { PriceSnapshotEntry } from '../lib/cost/index.js';
 import { heartbeatIntervalMs, leaseDurationMs } from '../lib/lease/index.js';
 import { closeDb } from '../db/schema/index.js';
@@ -58,14 +60,71 @@ interface SnapshotShape {
   priceSnapshot?: PriceSnapshotEntry[];
 }
 
+/**
+ * 预先为 run 里出现的**每个裁判 (厂商, 模型)** 建好一次模型调用。
+ *
+ * 为什么不在 `executeCase` 里懒加载：`executeCase` 是同步取 chat 的（它要跑在
+ * 一串算子中间），而查厂商是异步的。懒加载会逼出一个「首次返回 null、
+ * 第二次才有」的时序陷阱 —— 第一次那条 Case 会被误判成「裁判不可用」。
+ * 因此**先全部建好**，再开跑；建不出来的登记成 `null`，让该类 Case 明确 FAILED。
+ *
+ * 键是 `providerId:modelId` 而非仅 providerId：同一厂商下可以配两个裁判模型
+ * （如 5 分制 / 10 分制各一个），只按厂商缓存会把后一个的 model 用错。
+ */
+async function buildJudgeChatResolver(
+  evaluators: readonly { kind: 'rule' | 'judge'; config: unknown }[],
+): Promise<(config: { modelProviderId: string; modelId: string }) => JudgeChat | null> {
+  const targets = new Map<string, { modelProviderId: string; modelId: string }>();
+  for (const e of evaluators) {
+    if (e.kind !== 'judge') continue;
+    const c = e.config as { modelProviderId: string; modelId: string };
+    targets.set(`${c.modelProviderId}:${c.modelId}`, {
+      modelProviderId: c.modelProviderId,
+      modelId: c.modelId,
+    });
+  }
+
+  const built = new Map<string, JudgeChat | null>();
+  await Promise.all(
+    [...targets].map(async ([key, t]) => {
+      const provider = await getProviderForExecution(t.modelProviderId);
+      built.set(
+        key,
+        provider === null
+          ? null
+          : createJudgeChat({
+              baseUrl: provider.baseUrl,
+              apiKey: provider.apiKey,
+              model: t.modelId,
+            }),
+      );
+    }),
+  );
+
+  return (config) => built.get(`${config.modelProviderId}:${config.modelId}`) ?? null;
+}
+
 /** 处理一条已领取的 run（状态已由 `claim_next_run()` 置为 RUNNING）。 */
-export async function processRun(runId: string): Promise<void> {
+export async function processRun(runId: string, claimEpoch: number): Promise<void> {
   // 领取时 `heartbeat_at` 保持 NULL（由 claim_next_run 决定，不在这里写）：
   // 只有**真正在跑的 worker** 才续约，否则「领了就跑路」也会显得活着。
+  //
+  // `claimEpoch` 是 M2-3 的 fencing 判据：心跳带 `WHERE claim_epoch = $epoch`。
+  // 返回 `false` 表示「我已不是属主」（被回收后别人领走了）——
+  // 此时必须**停止续约并放弃该 run**，不得继续写任何结果。
+  let lostOwnership = false;
   const heartbeat = setInterval(() => {
-    void touchHeartbeat(runId).catch((err: unknown) => {
-      log(`run ${runId} 心跳失败：${(err as Error).message}`);
-    });
+    void touchHeartbeat(runId, claimEpoch)
+      .then((ok) => {
+        if (!ok && !lostOwnership) {
+          lostOwnership = true;
+          log(`run ${runId} 已不是属主（epoch=${String(claimEpoch)}），停止续约并放弃`);
+          clearInterval(heartbeat);
+        }
+      })
+      .catch((err: unknown) => {
+        log(`run ${runId} 心跳失败：${(err as Error).message}`);
+      });
   }, HEARTBEAT_INTERVAL_MS);
 
   try {
@@ -107,7 +166,23 @@ export async function processRun(runId: string): Promise<void> {
       }),
     );
 
-    const limit = pLimit(Math.max(1, Math.min(detail.concurrency || CONCURRENCY_DEFAULT, 32)));
+    // 并发度取 min(run.concurrency, provider.max_concurrency)：用户意图（run）
+    // 可以被物理上限（厂商）压低，反过来不行。`effConcurrency` 记在日志里，
+    // 否则「慢」只会被归因到网关，而真实原因是厂商只给了 2 个并发。
+    const effConcurrency = effectiveConcurrency({
+      runConcurrency: detail.concurrency || CONCURRENCY_DEFAULT,
+      providerMaxConcurrency: provider.maxConcurrency,
+    });
+    log(
+      `run ${runId} 并发生效值 ${String(effConcurrency.effective)} ` +
+        `（run=${String(effConcurrency.runLimit)}，厂商=${String(effConcurrency.providerLimit)}，` +
+        `受限于 ${effConcurrency.cappedBy === 'provider' ? '厂商' : 'run'}）`,
+    );
+    // 闸门按**厂商**共享：同一厂商被两个 run 同时使用时，各自开一个 p-limit
+    // 会让厂商看到 2×上限。这里取共享实例，保证进程内单厂商不超发。
+    const limit = providerLimiter(provider.id, effConcurrency.effective);
+
+    const resolveJudgeChat = await buildJudgeChatResolver(evaluators);
 
     const tasks = cases
       .filter((c) => !done.has(c.caseKey)) // 重跑时跳过已写入的 Case（幂等）
@@ -121,6 +196,7 @@ export async function processRun(runId: string): Promise<void> {
             provider,
             evaluators,
             priceSnapshot,
+            resolveJudgeChat,
           });
           await insertResult({
             evalRunId: runId,
@@ -134,12 +210,12 @@ export async function processRun(runId: string): Promise<void> {
             score: outcome.score,
             passed: outcome.passed,
             operatorScores: outcome.operatorScores,
-            judgeReasoning: null,
+            judgeReasoning: outcome.judgeReasoning,
             latencyMs: outcome.latencyMs,
             tokensIn: outcome.tokensIn,
             tokensOut: outcome.tokensOut,
             costTarget: outcome.costTarget,
-            costJudge: 0,
+            costJudge: outcome.costJudge,
           });
           // 递增刷新进度：否则运行中 `succeeded_cases` 恒为 0，
           // `PG-03` 的进度条整块 UI 等于不存在（`#1` 浏览器验收发现）。
@@ -187,8 +263,8 @@ export async function runWorker(): Promise<void> {
         await sleep(POLL_INTERVAL_MS);
         continue;
       }
-      log(`领取 run ${claimed.id}（${claimed.totalCases} 条 Case）`);
-      await processRun(claimed.id);
+      log(`领取 run ${claimed.id}（${claimed.totalCases} 条 Case，epoch=${String(claimed.claimEpoch)}）`);
+      await processRun(claimed.id, claimed.claimEpoch);
     } catch (err) {
       log(`处理失败：${(err as Error).message}`);
       await sleep(POLL_INTERVAL_MS);

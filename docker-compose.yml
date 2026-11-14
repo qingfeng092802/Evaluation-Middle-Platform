@@ -26,5 +26,46 @@ services:
     volumes:
       - eval_pgdata:/var/lib/postgresql/data
 
+  # ---------------------------------------------------------------------------
+  # LiteLLM sidecar（`TS-2`）：只负责多厂商路由与并发限流。
+  #
+  # 为什么不挂在默认启动里：`docker compose up -d db` 是每个人每天要跑的
+  # 最短路径，而 sidecar 需要一份由数据库生成的 config.yaml 才有意义。
+  # 因此它待在 `gateway` profile 下，只有显式 `--profile gateway` 才启动。
+  #
+  # 两条不能越过的边界：
+  #   1. **Key 只从环境变量注入**（`LITELLM_PROVIDER_KEY_<厂商 id>`），
+  #      compose 文件里永远不出现明文凭据；配置文件里也只有 `os.environ/...`。
+  #   2. **绝不读它的成本**。所有成本由我方按 `tokens_in/out × model_prices 单价`
+  #      自行计算（`TS-2` 红线）。LiteLLM 自带的 cost/usage 不落库、不展示。
+  # ---------------------------------------------------------------------------
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: eval-platform-litellm
+    profiles: ['gateway']
+    # 与 db 一样只在本机回环暴露：它是一个内部路由进程，不该对局域网开端口
+    ports:
+      - '127.0.0.1:4000:4000'
+    command:
+      - --config
+      - /app/config.yaml
+      - --port
+      - '4000'
+    # 由 `npm run gateway:config` 从 model_providers 生成；不入库（见 .gitignore）
+    volumes:
+      - ./tools/litellm/config.generated.yaml:/app/config.yaml:ro
+    environment:
+      # 只声明「配置里出现了哪个变量」是不够的：值必须从 compose 外部注入。
+      # env_file 指向一个**不入库**的文件（.gitignore 已挡住 *.env / .env.*），
+      # 内容形如 LITELLM_PROVIDER_KEY_<厂商 id>=<真 Key>。
+      # 生成器 `npm run gateway:config` 会打印需要注入哪些变量名。
+      - LITELLM_CONFIG_PATH=/app/config.yaml
+    env_file:
+      - path: ./tools/litellm/gateway.env
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   eval_pgdata:

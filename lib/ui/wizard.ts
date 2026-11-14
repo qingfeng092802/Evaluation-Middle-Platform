@@ -1,8 +1,11 @@
 /**
- * `PG-02` 第 3 步「确定性规则算子」区块的展示口径（纯函数）。
+ * `PG-02` 第 3 步两个区块的展示口径（纯函数）。
  *
- * 这里**只**放三样东西：六个内置算子的清单、各自参数的默认值、以及把「勾选状态」
- * 编译成 `POST /api/runs` 需要的 `RunEvaluatorInput[]`。
+ * 一、六个「确定性规则算子」：清单、默认参数、勾选状态 → `RunEvaluatorInput[]`。
+ * 二、「LLM 裁判算子」（M2 · Batch 2）：单独一块，因为它要选**另一个模型**、
+ *    写评分 Prompt、定量表，形态与规则算子完全不同。混进同一张清单会让
+ *    `RULE_OPERATOR_SPECS` 的键类型从 `BuiltinEvaluatorKey` 退化成 `string`，
+ *    `defaultConfigOf` 的穷尽 `switch` 随之失效。
  *
  * ⚠️ 三条阻塞校验**不在这里实现**。
  * 它的唯一实现是 `lib/preflight/index.ts`（服务端 `POST /api/runs` 用的同一份代码）。
@@ -14,6 +17,7 @@
 import type {
   BuiltinEvaluatorKey,
   EvaluatorConfig,
+  JudgeEvaluatorConfig,
   RunEvaluatorInput,
 } from '@eval-platform/contracts';
 import { EvaluatorConfig as EvaluatorConfigSchema } from '@eval-platform/contracts';
@@ -45,9 +49,9 @@ export type RuleField =
 /**
  * 六个内置规则算子，顺序与 `PG-02` / `PG-07` 的列举顺序一致。
  *
- * **不含 `judge`**：`[FE-03]` 交付物 2 规定 M1 第 3 步只渲染「确定性规则算子」区块。
- * 裁判算子连默认配置都没有（`lib/operators/index.ts` 也未注册），
- * 在这里留一个置灰项只会让人以为差一步就能用。
+ * **不含 `judge`**：裁判算子是另一块（`JUDGE_OPERATOR_SPEC`），
+ * 本清单的类型是 `BuiltinEvaluatorKey` 而非 `string`，塞进 `judge` 会让
+ * `defaultConfigOf` 的穷尽 `switch` 失去保护（见下方注释）。
  */
 export const RULE_OPERATOR_SPECS: readonly RuleOperatorSpec[] = [
   {
@@ -194,4 +198,244 @@ export function operatorConfigError(selected: SelectedEvaluator): string | null 
   const field = spec?.fields.find((f) => f.name === fieldName);
   const where = field === undefined ? '' : `「${field.label}」`;
   return `${label}${where}的参数未填好`;
+}
+
+// ---------------------------------------------------------------------------
+// 二、LLM 裁判算子区块（M2 · Batch 2 · 交付物 3）
+// ---------------------------------------------------------------------------
+
+/** 裁判区块的字段描述（比规则算子的 `RuleField` 多一种 `enum`：量表只有三档）。 */
+export type JudgeField =
+  | { readonly kind: 'provider'; readonly name: 'modelProviderId'; readonly label: string }
+  | { readonly kind: 'model'; readonly name: 'modelId'; readonly label: string }
+  | { readonly kind: 'prompt'; readonly name: 'promptTemplate'; readonly label: string }
+  | {
+      readonly kind: 'enum';
+      readonly name: 'scaleMax';
+      readonly label: string;
+      readonly options: readonly (1 | 5 | 10)[];
+    }
+  | {
+      readonly kind: 'float';
+      readonly name: 'passThreshold';
+      readonly label: string;
+      /** 界面上填的是**量表内的分**，此处给它的范围。 */
+      readonly onScale: true;
+    }
+  | { readonly kind: 'float'; readonly name: 'temperature'; readonly label: string }
+  | { readonly kind: 'int'; readonly name: 'maxTokens'; readonly label: string };
+
+export interface JudgeOperatorSpec {
+  readonly key: 'judge';
+  readonly label: string;
+  readonly hint: string;
+  readonly fields: readonly JudgeField[];
+}
+
+/**
+ * 裁判区块。
+ *
+ * 字段顺序即用户在界面上从上往下的填写顺序：先「用哪个模型评」，
+ * 再「怎么评」（Prompt），最后「量表与阈值」。
+ */
+export const JUDGE_OPERATOR_SPEC: JudgeOperatorSpec = {
+  key: 'judge',
+  label: 'LLM 裁判算子',
+  hint: '由一个模型按评分 Prompt 给目标输出打分（成本单独入账）',
+  fields: [
+    { kind: 'provider', name: 'modelProviderId', label: '裁判模型厂商' },
+    { kind: 'model', name: 'modelId', label: '裁判模型' },
+    { kind: 'prompt', name: 'promptTemplate', label: '评分 Prompt' },
+    { kind: 'enum', name: 'scaleMax', label: '量表上界', options: [1, 5, 10] },
+    { kind: 'float', name: 'passThreshold', label: '通过阈值（量表内分）', onScale: true },
+    { kind: 'float', name: 'temperature', label: '温度' },
+    { kind: 'int', name: 'maxTokens', label: '最大输出 token' },
+  ],
+};
+
+/**
+ * 裁判区块的表单草稿。
+ *
+ * **注意 `passScoreOnScale` 与 `passThreshold` 是两个不同的量**：
+ *  - `passScoreOnScale`：用户在界面上填的分（如「5 分制里够 3 分算过」），
+ *  - `passThreshold`：契约里**归一化到 [0,1]** 的那个值（0.6）。
+ *
+ * 之所以不让 UI 直接编辑 `passThreshold`：用户在 10 分制下会想填 6，
+ * 而契约的 `.max(1)` 会直接拒掉 6。把换算藏进 `buildJudgeConfig()` 里，
+ * 界面上就只需要「量表内分」这一种心智。
+ */
+export interface JudgeDraft {
+  readonly modelProviderId: string;
+  readonly modelId: string;
+  readonly promptTemplate: string;
+  readonly scaleMax: 1 | 5 | 10;
+  readonly passScoreOnScale: number;
+  readonly temperature: number;
+  readonly maxTokens: number | undefined;
+}
+
+/** 草稿的默认值：5 分制、够 3 分算过（= 0.6，与契约默认一致）。 */
+export function defaultJudgeDraft(providerId: string): JudgeDraft {
+  return {
+    modelProviderId: providerId,
+    modelId: '',
+    promptTemplate:
+      '请给下面这条回答打分。\n\n题目：{{input}}\n模型输出：{{output}}\n参考答案：{{reference}}\n\n请按 5 分制打分，并只输出 JSON：{"score": <0-5 的整数>, "reason": "<一句话理由>"}',
+    scaleMax: 5,
+    passScoreOnScale: 3,
+    temperature: 0,
+    maxTokens: undefined,
+  };
+}
+
+/**
+ * 量表内分 → 归一化阈值。
+ *
+ * `scaleMax` 是量表上界，`score` 在契约里恒为归一化值，因此阈值也必须归一化。
+ * 这里**不 clamp** 到 [0,1] 以外也照样算——越界由 `buildJudgeConfig` 兜住
+ * （它会让契约自己拒），静默 clamp 会把「用户填错了」变成「阈值悄悄变成 1」。
+ */
+export function judgeScaleThresholdToNormalized(scoreOnScale: number, scaleMax: number): number {
+  return scoreOnScale / scaleMax;
+}
+
+/** 归一化阈值 → 量表内分（用于把已存的配置回显到界面上）。 */
+export function judgeThresholdToScale(normalized: number, scaleMax: number): number {
+  return normalized * scaleMax;
+}
+
+/**
+ * 草稿 → `JudgeEvaluatorConfig`。
+ *
+ * **把量表分换算成归一化阈值**（见 `JudgeDraft` 的注释）。越界的量表分会被
+ * `Math.min/max` 夹到合法区间，而不是原样吐出：这个函数可能被 UI 的漏拦路径调到，
+ * 那时产出契约非法值只会在服务端变成一个看不懂的 400。
+ */
+export function buildJudgeConfig(draft: JudgeDraft): JudgeEvaluatorConfig {
+  const normalized = judgeScaleThresholdToNormalized(draft.passScoreOnScale, draft.scaleMax);
+  const passThreshold = Math.min(1, Math.max(0, Number.isFinite(normalized) ? normalized : 0));
+
+  return {
+    key: 'judge',
+    modelProviderId: draft.modelProviderId,
+    modelId: draft.modelId,
+    promptTemplate: draft.promptTemplate,
+    scaleMax: draft.scaleMax,
+    passThreshold,
+    temperature: draft.temperature,
+    ...(draft.maxTokens === undefined ? {} : { maxTokens: draft.maxTokens }),
+  };
+}
+
+/**
+ * 提交前的**警告**（不是错误：都能提交，只是结果可能没意义）。
+ *
+ * 三条：
+ *  1. Prompt 没有 `{{output}}` ⇒ 裁判看不到被评的东西，只能瞎猜；
+ *  2. Prompt 没有 `{{reference}}` ⇒ 没参考答案，裁判只能凭自己的知识判断；
+ *  3. 裁判模型 == 目标模型 ⇒ 自己评自己。允许（可做一致性检查），但要提醒。
+ *
+ * 只返回**中文句子**，UI 直接渲染。
+ */
+export function judgeWarnings(
+  draft: JudgeDraft,
+  target?: { readonly targetProviderId: string; readonly targetModelId: string },
+): string[] {
+  const out: string[] = [];
+  if (!draft.promptTemplate.includes('{{output}}')) {
+    out.push('评分 Prompt 未引用 {{output}}，裁判将看不到被评的输出');
+  }
+  if (!draft.promptTemplate.includes('{{reference}}')) {
+    out.push('评分 Prompt 未引用 {{reference}}，无参考答案时裁判只能凭自身知识判断');
+  }
+  if (
+    target !== undefined &&
+    draft.modelId !== '' &&
+    draft.modelId === target.targetModelId &&
+    draft.modelProviderId === target.targetProviderId
+  ) {
+    out.push('裁判模型与目标模型是同一个模型，等于自己评自己，分数仅供参考');
+  }
+  return out;
+}
+
+/**
+ * 提交前的**错误**（不修就提交不上去）。
+ *
+ * 与 `judgeWarnings` 分开：警告是「能跑但没意义」，错误是「跑了必然 400」。
+ * 把两者混成一个列表，UI 就只能用一种颜色渲染，用户分不清哪个非改不可。
+ *
+ * 判据不手写「modelId 不能为空」这类重复规则，而是跑契约的 `EvaluatorConfig`，
+ * 与 `operatorConfigError()` 同一口径。
+ */
+export function judgeConfigError(draft: JudgeDraft): string | null {
+  const parsed = EvaluatorConfigSchema.safeParse(buildJudgeConfig(draft));
+  if (parsed.success) return null;
+
+  const first = parsed.error.issues[0];
+  const path = String(first?.path[first.path.length - 1] ?? '');
+
+  // 把契约里的字段名翻成界面上的标签，比露出 `promptTemplate` 可读
+  const labelOf: Readonly<Record<string, string>> = {
+    modelProviderId: '裁判模型厂商',
+    modelId: '裁判模型',
+    promptTemplate: '评分 Prompt',
+    scaleMax: '量表上界',
+    passThreshold: '通过阈值',
+    temperature: '温度',
+    maxTokens: '最大输出 token',
+  };
+  const label = labelOf[path] ?? '参数';
+  return `裁判算子的「${label}」未填好`;
+}
+
+/**
+ * 把「规则算子勾选状态 + 裁判草稿」编译成 `POST /api/runs` 的 `evaluators` 数组。
+ *
+ * ## 为什么需要这么一个合并函数
+ *
+ * 两类算子在界面上是两块独立的 UI，但服务端只看到一个 `evaluators` 数组，
+ * 且**数组顺序即执行顺序**。若两个区块各自往同一个 state 里塞，
+ * 顺序就会退化成「谁先渲染谁在前」，而渲染顺序与用户选择顺序无关。
+ *
+ * `order` 是**算子 key 的完整顺序**（如 `['judge', 'regex']`），
+ * 缺省时「规则在前、裁判在后」—— 这是更符合直觉的次序（先确定性判定，再语义裁判）。
+ *
+ * 只按 `order` 里出现过的条目产出；`order` 里没有的条目**补在后面**，
+ * 而不是静默丢弃：漏一个算子等于少一项评分，且用户从界面上看不出来。
+ */
+export function buildRunEvaluators(input: {
+  judge: JudgeDraft | null;
+  rules?: readonly SelectedEvaluator[];
+  /** 算子 key 的先后；缺省 = 全部规则算子（按勾选顺序）+ 裁判。 */
+  order?: readonly string[];
+}): RunEvaluatorInput[] {
+  const rules = input.rules ?? [];
+
+  const byKey = new Map<string, RunEvaluatorInput>();
+  for (const r of buildEvaluatorInputs(rules)) {
+    byKey.set(r.config.key, r);
+  }
+  if (input.judge !== null) {
+    const cfg = buildJudgeConfig(input.judge);
+    byKey.set('judge', { config: cfg, weight: 1, passThreshold: cfg.passThreshold });
+  }
+
+  const order =
+    input.order ?? (input.judge === null ? rules.map((r) => r.key) : [...rules.map((r) => r.key), 'judge']);
+
+  const out: RunEvaluatorInput[] = [];
+  const emitted = new Set<string>();
+  for (const key of order) {
+    const entry = byKey.get(key);
+    if (entry !== undefined && !emitted.has(key)) {
+      out.push(entry);
+      emitted.add(key);
+    }
+  }
+  // 防御：`order` 漏掉的条目补在末尾，不静默丢弃
+  for (const [key, entry] of byKey) {
+    if (!emitted.has(key)) out.push(entry);
+  }
+  return out;
 }

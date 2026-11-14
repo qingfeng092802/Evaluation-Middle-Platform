@@ -30,7 +30,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { DataTable } from '../components/ui/data-table';
 import { datasetsTableColumns } from '../components/datasets/datasets-table-columns';
-import { EDGE_PATH, tryLocalChromium } from '../scripts/pw-local.js';
+import { EDGE_PATH, tryLocalChromium, waitUntil } from '../scripts/pw-local.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const BASE = process.env['PG_BASE'] ?? 'http://127.0.0.1:3000';
@@ -487,7 +487,22 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
           await page.waitForTimeout(300);
 
           await page.locator('button', { hasText: '校验' }).first().click();
-          await page.waitForTimeout(2_500);
+
+          /**
+           * 等**校验结果区真的渲染出来**，而不是等一个固定时长。
+           *
+           * 真栈联调实测：`next dev` 冷编译 `/api/datasets/imports/validate`
+           * 要 2.8s，而这里原先写的是 `waitForTimeout(2_500)` —— 冷缓存必红。
+           * 而热缓存下那 2.5s 又是纯白等。等条件成立才是对的。
+           */
+          const validateTimedOut = `校验结果在 30s 内没有渲染出来（接口慢或面板坏了）`;
+          await waitUntil(
+            async () =>
+              (await page.$$eval('li', (els) =>
+                els.some((li) => /^第\s*\d+\s*行/.test((li.textContent ?? '').trim())),
+              )),
+            { timeoutMs: 30_000, message: validateTimedOut },
+          );
 
           const result = (await page.evaluate(`(() => {
             const body = document.body.textContent || '';
@@ -574,7 +589,20 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
           const row = page.locator('table tbody tr', { hasText: targetName }).first();
           expect(await row.count(), `评测集「${targetName}」必须出现在列表里`).toBe(1);
           await row.first().locator('button', { hasText: '查看版本' }).click();
-          await page.waitForTimeout(1_500);
+
+          // 等「版本行真的渲染出来」（独立的 `N 条` span），不等固定时长 ——
+          // 冷编译下 1.5s 不够，热缓存下 1.5s 是白等。判据同下方 DOM 探针。
+          await waitUntil(
+            async () =>
+              (await page.$$eval('li', (els) =>
+                els.some((li) =>
+                  [...li.querySelectorAll('span')].some((s) =>
+                    /^\s*\d+\s*条\s*$/.test(s.textContent ?? ''),
+                  ),
+                ),
+              )),
+            { timeoutMs: 30_000, message: '点「查看版本」后 30s 内没有渲染出带 `N 条` 的版本行' },
+          );
 
           const history = (await page.evaluate(`(() => {
             const t = document.body.textContent || '';
@@ -603,7 +631,7 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
           // 改为：等「版本行真的渲染出来」（页面上出现独立的 `N 条` span），
           // 再用 `page.evaluate` 在 DOM 里按结构挑那个 li —— 判据是
           // 「该 li 内部有一个 span 的文案恰好是 `N 条`」，这是 `VersionRow` 的固定结构。
-          await page.waitForTimeout(1_000);
+          // （等待已在上方 `waitUntil` 完成，这里不再固定 sleep。）
 
           const versionRowInfo = (await page.evaluate(`(() => {
             const all = [...document.querySelectorAll('li')];
@@ -633,7 +661,13 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
           // 用「`li` 里的 `预览` 按钮」定位：侧栏导航的 `li` 里没有「预览」，
           // 全页唯一的「预览」在版本行内，因此不会误命中。
           await page.locator('li button', { hasText: '预览' }).first().click();
-          await page.waitForTimeout(1_500);
+
+          // 等内层 Case 明细表真的出现（页面里有第 2 张表），不等固定时长：
+          // 版本详情接口冷编译实测 1549ms，原先的 1.5s 恰好卡在边界上。
+          await waitUntil(
+            async () => (await page.$$eval('table', (els) => els.length)) >= 2,
+            { timeoutMs: 30_000, message: '点「预览」后 30s 内没有渲染出内层 Case 明细表' },
+          );
 
           const preview = (await page.evaluate(`(() => {
             const tables = [...document.querySelectorAll('table')];

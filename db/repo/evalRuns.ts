@@ -48,6 +48,12 @@ interface RunRow {
   started_at: Date | null;
   finished_at: Date | null;
   cancel_requested_at: Date | null;
+  /**
+   * M2-3 Fencing token。`pg` 驱动把 `bigint` 读成 **string**（超出 `Number.MAX_SAFE_INTEGER`
+   * 时不丢精度），这里按 string 声明，映射层再 `Number(...)`。
+   * 迁移未跑时为 `undefined`，映射层用 `?? 0` 兜底。
+   */
+  claim_epoch: string | undefined;
   dataset_label: string;
   target_label: string;
 }
@@ -99,6 +105,10 @@ function toRun(r: RunRow): EvalRun {
     startedAt: isoOrNull(r.started_at),
     finishedAt: isoOrNull(r.finished_at),
     cancelRequestedAt: isoOrNull(r.cancel_requested_at),
+    // M2-3 Fencing token：数据库列是 `NOT NULL DEFAULT 0`，老行/未领取行都是 0。
+    // `pg` 把 bigint 读成 string，这里转回 number（epoch 是领取计数，不会溢出）。
+    // `?? 0` 兜住「迁移未跑但代码先上」的中间态，而不是让它变成 NaN。
+    claimEpoch: r.claim_epoch === undefined ? 0 : Number(r.claim_epoch),
   };
 }
 
@@ -329,7 +339,11 @@ export async function finalizeRun(runId: string, cancelled: boolean): Promise<st
               cost_target = $13,
               cost_judge = $14,
               finished_at = now()
-        WHERE id = $1`,
+        WHERE id = $1
+        -- 终态也要通知：SSE 靠 NOTIFY 唤醒，不发的话最后一条 status 事件
+        -- 要等下一次 15s 心跳才会被发现 —— 用户看着进度条满格却仍显示「运行中」。
+        -- 写在同一条语句里是为了让通知随事务提交后才投递（§3.5 [3]）。
+        RETURNING pg_notify('run_progress', id::text)`,
       [
         runId,
         status,
@@ -400,7 +414,10 @@ export async function refreshRunProgress(runId: string): Promise<void> {
            FROM eval_case_results
           WHERE eval_run_id = $1
        ) s
-      WHERE r.id = $1 AND r.status = 'RUNNING'`,
+      WHERE r.id = $1 AND r.status = 'RUNNING'
+      -- 写库与通知同一条语句：POSTGRES 会在事务提交后才投递，订阅方回查时
+      -- 一定能看到刚写的行（否则会发出「事件到了、计数没变」的假事件）。
+      RETURNING pg_notify('run_progress', r.id::text)`,
     [runId],
   );
 }

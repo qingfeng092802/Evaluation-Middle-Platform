@@ -30,7 +30,7 @@
  */
 import type { EvalCaseResult } from '@eval-platform/contracts';
 import { describe, expect, it } from 'vitest';
-import { EDGE_PATH, tryLocalChromium, type PwPage } from '../scripts/pw-local.js';
+import { EDGE_PATH, tryLocalChromium, waitUntil, type PwPage } from '../scripts/pw-local.js';
 import { caseKeyLabel } from '../lib/ui/runs';
 
 const BASE = process.env['PG_BASE'] ?? 'http://127.0.0.1:3000';
@@ -137,7 +137,11 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
         try {
           const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
           await page.goto(`${BASE}/runs/${fixture.runId}`, { waitUntil: 'networkidle' });
-          await page.waitForTimeout(1_500);
+          // 等明细表真的渲染出 ≥2 行，而不是等固定时长：冷编译下 1.5s 不够。
+          await waitUntil(async () => (await renderedCaseKeys(page)).length >= 2, {
+            timeoutMs: 30_000,
+            message: '明细表在 30s 内没有渲染出 ≥2 行',
+          });
 
           // 基准取**渲染顺序**，不是接口顺序（同分行的相对顺序无保证，见 renderedCaseKeys）。
           const keys = await renderedCaseKeys(page);
@@ -186,7 +190,10 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
         try {
           const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
           await page.goto(`${BASE}/runs/${fixture.runId}`, { waitUntil: 'networkidle' });
-          await page.waitForTimeout(1_500);
+          await waitUntil(async () => (await renderedCaseKeys(page)).length >= 2, {
+            timeoutMs: 30_000,
+            message: '明细表在 30s 内没有渲染出 ≥2 行（输入框聚焦用例）',
+          });
 
           const first = await openRow(page, 0);
 
@@ -251,7 +258,10 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
         try {
           const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
           await page.goto(`${BASE}/runs/${fixture.runId}`, { waitUntil: 'networkidle' });
-          await page.waitForTimeout(1_500);
+          await waitUntil(async () => (await renderedCaseKeys(page)).length >= 2, {
+            timeoutMs: 30_000,
+            message: '明细表在 30s 内没有渲染出 ≥2 行（监听作用域用例）',
+          });
 
           const keys = await renderedCaseKeys(page);
           expect(keys.length, '明细表至少要渲染 2 行').toBeGreaterThanOrEqual(2);

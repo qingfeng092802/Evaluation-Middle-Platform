@@ -34,6 +34,8 @@ export const TABLE_NAMES = [
   'regression_gates',
   'gate_evaluations',
   'case_human_labels',
+  // M2-1（0019）：网关调用幂等账本
+  'gateway_idempotency',
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];
 
@@ -79,6 +81,11 @@ export const CROSS_CUTTING_MIGRATIONS = [
     file: '0018_heartbeat_lease.sql',
     purpose: 'heartbeat lease column / reclaim predicate (GREATEST)',
   },
+  {
+    no: 19,
+    file: '0019_claim_epoch.sql',
+    purpose: 'fencing token (claim_epoch) / gateway idempotency ledger',
+  },
 ] as const;
 
 /**
@@ -119,12 +126,20 @@ export const STATE_MACHINE_GUARDED_TABLES = [
  * 构成：7 张完全不可变表 × (`no_update` + `no_delete`) = 14
  *      + `eval_runs` 的 `guard` + `no_delete`          =  2
  *      + `baselines` 的 `guard`（状态机无删除触发器）    =  1
+ *      + `gateway_idempotency` 的 `no_delete` + `usage_once` =  2   ← M2-1（0019）
  *                                                     ------
- *                                                        17
+ *                                                        19
+ *
+ * ⚠️ `gateway_idempotency` 刻意**没有** `no_update`：占位发生在调用之前（此时
+ * 还没有用量），真实用量必须调用成功后回填。它以 `usage_once` 取代 `no_update`，
+ * 语义是「只允许 `0 → 实际值` 一次」，而非「永不可写」。
  *
  * ⚠️ 历史记录：本名单原为 15（6 张不可变表）。2026-11-07 需求方拍板新增
  * 第 15 张表 `case_human_labels` 后变为 17。`database-schema.md` §6 的 `T-10`
  * 已同步为 17，两处必须一致。
+ *
+ * 2026-11-12（M2 Batch 1）：新增 `gateway_idempotency`（M2-1 幂等账本）后
+ * 变为 **19**。`database-schema.md` §6 的 `T-10` 已同步为 19。
  */
 export const TRIGGER_NAMES = [
   'trg_dataset_versions_no_update',
@@ -144,6 +159,9 @@ export const TRIGGER_NAMES = [
   'trg_eval_runs_guard',
   'trg_eval_runs_no_delete',
   'trg_baselines_guard',
+  // M2-1（0019）：幂等账本不可删；用量只允许「占位 → 回填」一次
+  'trg_gateway_idempotency_no_delete',
+  'trg_gateway_idempotency_usage_once',
 ] as const;
 export type TriggerName = (typeof TRIGGER_NAMES)[number];
 
