@@ -143,6 +143,8 @@ export const ErrorCode = z.enum([
   'NOT_FOUND',
   'CONFLICT',
   'IMMUTABLE_VIOLATION',
+  /** 鉴权失败（403）。M3 Batch 1：decision 仅 ROLE-B，非 B 即此码（openapi /api/baselines/{id}/decision 403）。 */
+  'FORBIDDEN',
   'ILLEGAL_STATE_TRANSITION',
   'BLOCKED_NO_PROVIDER_CREDENTIALS',
   'BLOCKED_NO_EVALUATORS',
