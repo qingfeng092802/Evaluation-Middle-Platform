@@ -17,6 +17,7 @@ import { useApi } from '@/lib/ui/use-api';
 import {
   compareBannerView,
   metricDeltaView,
+  metricLabel,
   metricValueText,
   operatorTableRows,
   radarOption,
@@ -192,7 +193,7 @@ function RunIdentityCard({ role, run }: { role: string; run: EvalRun }): React.R
 
 /** 汇总对比列：`指标 ｜ 基线 ｜ 当前 ｜ 变化`（`pages-and-flows.md` PG-08 区域 2）。 */
 const metricColumns: readonly DataTableColumn<RunComparisonDiffResponse['metrics'][number]>[] = [
-  { id: 'metric', header: '指标', cell: (m) => <span className="text-xs">{m.label}</span> },
+  { id: 'metric', header: '指标', cell: (m) => <span className="text-xs">{metricLabel(m)}</span> },
   {
     id: 'baseline',
     header: '基线',

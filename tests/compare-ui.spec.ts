@@ -14,6 +14,7 @@ import { formatDelta, formatScore } from '../lib/format/index.js';
 import {
   compareBannerView,
   metricDeltaView,
+  metricLabel,
   metricValueText,
   operatorTableRows,
   radarOption,
@@ -121,6 +122,21 @@ describe('metricValueText', () => {
   });
   it('null → —', () => {
     expect(metricValueText('pass_rate', null)).toBe('—');
+  });
+});
+
+describe('metricLabel · 中文映射（裁定 1）', () => {
+  it('六个指标全部映射为中文', () => {
+    expect(metricLabel({ metric: 'score_overall', label: 'score_overall' })).toBe('综合得分');
+    expect(metricLabel({ metric: 'pass_rate', label: 'pass_rate' })).toBe('通过率');
+    expect(metricLabel({ metric: 'coverage', label: 'coverage' })).toBe('覆盖率');
+    expect(metricLabel({ metric: 'latency_p50_ms', label: 'latency_p50_ms' })).toBe('P50 延迟');
+    expect(metricLabel({ metric: 'latency_p95_ms', label: 'latency_p95_ms' })).toBe('P95 延迟');
+    expect(metricLabel({ metric: 'cost_total', label: 'cost_total' })).toBe('Token 成本');
+  });
+  it('未知 key fallback 到契约 label 原文', () => {
+    expect(metricLabel({ metric: 'future_metric', label: 'future_metric' })).toBe('future_metric');
+    expect(metricLabel({ metric: 'future_metric', label: '自定义标签' })).toBe('自定义标签');
   });
 });
 

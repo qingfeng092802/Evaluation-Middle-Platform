@@ -21,6 +21,23 @@ export type { ChartTheme } from '../charts/theme.js';
 /** 已确认态的绿色氛围文案（页面级展示文案，flagged judgment：非契约原文）。 */
 export const BANNER_CONFIRMED_TEXT = '对比基线为已确认基线';
 
+/**
+ * 指标 key → 中文展示名（裁定 1：极简映射，匹配不到 fallback 到 key 本身）。
+ * 纯展示层：契约 `label` 字段原样保留在数据里，这里只做渲染时替换。
+ */
+export const METRIC_LABELS: Readonly<Record<string, string>> = {
+  score_overall: '综合得分',
+  pass_rate: '通过率',
+  coverage: '覆盖率',
+  latency_p50_ms: 'P50 延迟',
+  latency_p95_ms: 'P95 延迟',
+  cost_total: 'Token 成本',
+};
+
+export function metricLabel(row: { metric: string; label: string }): string {
+  return METRIC_LABELS[row.metric] ?? row.label;
+}
+
 export interface CompareBannerView {
   tone: 'pass' | 'warn';
   text: string;
