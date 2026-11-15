@@ -358,6 +358,25 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 
 ### Batch 2 · 对比引擎（`GET /api/compare` 与 `GET /api/compare/diff`）
 
+> **实现前提（2026-11-15 需求方裁定 + 前提修正，Batch 2 编码依据）**
+>
+> 0. **前提修正**：硬拒绝以 openapi 原文为准——`describeIncomparable()` 非空 →
+>    **400 VALIDATION_FAILED**，**不用 409**（openapi diff 描述「否则返回 400」，响应清单
+>    仅 200/400）。维度穷举仅「datasetVersionId 不同」与「同 run 自比」两个；
+>    targetVersionId / 算子集差异**不是**硬拒绝（契约函数不含），经 `alignmentWarning`
+>    与缺侧 null 呈现。
+> 1. **Q1 deltaPct** = (current − baseline) / baseline；baseline 为 null 或 **0** → null
+>    （绝不出 Infinity/NaN，不编造兜底值）。
+> 2. **Q2 算子并集**：baseline 的 `order_index` 在前，current 独有按自身 order_index
+>    追加尾部；缺侧 score=null → NOT_COMPARABLE。
+> 3. **Q3 分页少做**：全量返回，`page = { nextCursor: null, total: cases.length }`；
+>    契约 cursor 字段放着不实现，将来要分页直接填值不改响应形状。
+> 4. **Q4 null 透传**：run 的 pass_rate / coverage 等为 null → metric 行两侧 null、
+>    delta/deltaPct 全 null，照实反映数据不可用。
+> 5. metric `label` 取 metric key 本身（展示文案归 Batch 3 前端层）。
+> 6. `regressionThreshold` 查询参数在服务边界数字化（查询串恒为字符串，openapi 语义为
+>    number；NaN → 400）。
+
 **包含任务**
 
 - `[BE-M3-02]` 汇总对比 + 逐条 Diff 引擎
