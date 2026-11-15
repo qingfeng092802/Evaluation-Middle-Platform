@@ -314,6 +314,18 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 
 ### Batch 1 · Baseline 提名 / 确认链路（串行先行）
 
+> **实现前提（2026-11-15 需求方裁定，Batch 1 编码依据；聊天记录外的唯一落点）**
+>
+> 1. **角色传输**：MVP 阶段角色由 **`X-Role: A|B` 请求头模拟（缺省 `A`）**——「会话上下文」
+>    的 MVP 替身，不引入登录鉴权（OUT-4）。`decision` 仅 ROLE-B，非 B → 403；提名是
+>    ROLE-A 能力，不拦。约定写入路由文件头注释。
+> 2. **身份**：`nominated_by` / `decided_by` 写固定单机标识 **`'local'`**（MVP 占位值；
+>    PG-09 待审列表只展示运行名 / 理由 / 时间，不展示它；OUT-4 不做用户体系，勿虚构身份表）。
+> 3. **守卫（fail-closed）**：非 `COMPLETED` / `PARTIAL_FAILED` 的 run 提名 → 409；同一 run
+>    重复提名 → 409；已有 CONFIRMED 基线时提名**仍允许**（进待审队列），唯一性由确认时的
+>    `ux_baselines_one_confirmed` 报 409 兜底。状态机本体由 `trg_baselines_guard`（0016）
+>    定义：仅 `NOMINATED → CONFIRMED / REJECTED`，已裁定行冻结（re-decide → 409）。
+
 **包含任务**
 
 - `[BE-M3-01]` Baseline API（提名 / 决定 / 解析）

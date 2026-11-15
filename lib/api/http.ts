@@ -43,6 +43,17 @@ export class BadRequestError extends Error {
   }
 }
 
+/** 鉴权失败（403）。M3：decision 仅 ROLE-B（`X-Role` 约定，需求方 2026-11-15 裁定）。 */
+export class ForbiddenError extends Error {
+  constructor(
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'ForbiddenError';
+  }
+}
+
 interface ErrorBody {
   error: {
     code: ErrorCode;
@@ -91,6 +102,10 @@ export function toErrorResponse(err: unknown): NextResponse<ErrorBody> {
 
   if (err instanceof NotFoundError) {
     return NextResponse.json(envelope('NOT_FOUND', err.message, id), { status: 404 });
+  }
+
+  if (err instanceof ForbiddenError) {
+    return NextResponse.json(envelope('FORBIDDEN', err.message, id, err.details), { status: 403 });
   }
 
   if (err instanceof BlockedError) {
