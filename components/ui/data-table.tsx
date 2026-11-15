@@ -107,7 +107,13 @@ export function DataTable<T>({
   }
 
   return (
-    <div className={cn('w-full overflow-x-auto', className)} aria-busy={refreshing}>
+    // T-5 根因修复（2026-11-15，两步缺一不可）：
+    //  1. `max-w-full`：钉死容器宽度，表格 min-content 溢出交还 overflow-x-auto 内部滚动；
+    //  2. `relative`：容器是 8 个 `position:absolute` 的 sr-only span（排序朗读文案等）
+    //     的**唯一合法包含块**——没有它，这些 span 的包含块是初始包含块（根），
+    //     静态位置落在宽表格右端视口之外（1024 下实测 x=1336），把文档撑宽 313px
+    //     且穿透 overflow:hidden/clip 三层裁剪。相对锚定后 span 收进容器内部滚动区。
+    <div className={cn('relative w-full max-w-full overflow-x-auto', className)} aria-busy={refreshing}>
       <Table>
         <TableHead>
           <TableRow className="hover:bg-transparent">

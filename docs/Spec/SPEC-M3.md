@@ -96,6 +96,19 @@ M3 新增的 `PG-08` 与 `PG-04` 双栏都含表格 / 双栏布局，断言档�
   但**不强制断言 1024**；修完复核 `/runs`、`/datasets`、`/targets` 三页 1440 档读数不回退。
 - **口径联动**：`SPEC-M2` §1.4 的「已知缺陷、不修」被本裁定**取代**；「1024 只断言不折行」的
   既有边界不变。
+- **✅ 复核关闭（2026-11-15 · Batch 3 前置件）**：根因修复完成并实测归零。真实根因有**两层，缺一不可**——
+  ① `DataTable` 滚动容器缺 `max-w-full`（表格 min-content 1133px 把容器撑出视口）；
+  ② 容器缺 `position: relative`——容器内 8 个 `position:absolute` 的 `sr-only` span（各列排序朗读文案）
+  的包含块因此落到**初始包含块（根）**，最右一个静态位置落在 x=1336，把 `documentElement.scrollWidth`
+  撑到 1337（1024 视口实测横向可滚 313px；穿透 overflow:hidden/clip 的 container/main/body/html
+  四层——机制是 **ICB 包含块逃逸**，不是溢出传播，故裁剪无效）。
+  修复 = 容器类名加 `max-w-full` + `relative`（一行，全部 DataTable 页面同治）。
+  实测（1024 视口真实浏览器，修复前 → 后）：/runs 1337 / 可滚 313px → **1024 / 0**；
+  /datasets 1056 / 可滚 32px → **1024 / 0**；/targets 1024/0 → 1024/0。1440 档 parity 40/40 零回归。
+  **T-5 关闭。** 诊断存档：五轮控制变量探针（逐层量宽 / overflow 链 / abs 扫描 / 二分隔离）+
+  两轮机器二分（实验 1 逐列隐藏锁定第 0 列；实验 2 包含块链锁定 sr-only ICB 逃逸并活体验证
+  relative 修复），临时探针文件量完即删。同类风险已审计：`stream-connection-indicator.tsx` 与
+  `sidebar.tsx` 的 sr-only 均在 1024 视口内静态位置，无 T-5 级溢出（低风险，随观察）。
 
 ### 1.2 `HANDOFF.md` §4.6 的 8 处可判定固定等待是否在本里程碑清理
 

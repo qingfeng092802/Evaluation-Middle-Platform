@@ -5,6 +5,7 @@ import { usePathname } from 'next/navigation';
 import { Sidebar } from './sidebar';
 import { Topbar } from './topbar';
 import { ThemeToggle } from './theme-toggle';
+import { RoleSwitcher } from './role-switcher';
 import { NAV_SECTIONS, resolveActiveNav } from '@/lib/ui/nav';
 
 /**
@@ -49,8 +50,10 @@ export function AppShell({
  * 带主题切换按钮的外壳。
  *
  * 单独一个组件而不是把 `ThemeToggle` 塞进 `AppShell` 的 `actions`：
- * `actions` 是**页面级**快捷操作（「发起评测」「去配置」），
- * 主题切换是全局偏好，两者混在一个插槽里会挤掉真正的页面动作。
+ * `actions` 是**页面级**快捷操作（「发起评测」「去配置」），主题切换是全局偏好，
+ * 两者混在一个插槽里会挤掉真正的页面动作。
+ * 角色切换同理（MVP 裁定 1）：它是全局会话偏好，与 ThemeToggle 并列挂在
+ * 页面 actions 之外。
  */
 export function AppShellWithTheme(props: {
   breadcrumbs: readonly { label: string; href?: string }[];
@@ -63,6 +66,7 @@ export function AppShellWithTheme(props: {
       actions={
         <>
           {props.actions}
+          <RoleSwitcher />
           <ThemeToggle />
         </>
       }
