@@ -94,6 +94,22 @@ async function sheetOpen(page: PwPage): Promise<boolean> {
 }
 
 /**
+ * 两帧 `requestAnimationFrame`：**负向断言的沉淀条件**（替代固定 waitForTimeout）。
+ *
+ * 「按键后标题**不得**变化」没法用条件等待表达——条件等待只能等「某事发生」，
+ * 等不了「某事不发生」。等一个固定时长既慢又不可靠（慢机器上可能不够，
+ * 快机器上纯白等）。两帧 rAF 给 React 一个完整的「事件 → 状态 → 渲染 → 绘制」
+ * 机会：J/K 是离散事件，其状态提交在绘制前同步冲刷（React 离散事件语义），
+ * 若监听错挂在 window，标题会在两帧内变化；两帧后仍未变即为确定性证据。
+ */
+async function settle(page: PwPage): Promise<void> {
+  await page.evaluate(
+    // 浏览器里跑的是纯 JS：不能写 TS 泛型 `new Promise<void>`（会 SyntaxError）。
+    '(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))()',
+  );
+}
+
+/**
  * 从**页面里实读**明细表当前的 case key 顺序。
  *
  * 为什么不用接口返回的顺序做基准：明细表按 `sortBy=score&order=asc` 排，
@@ -152,14 +168,20 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
 
           // ---- J：下一条 ----
           await page.keyboard.press('j');
-          await page.waitForTimeout(400);
+          await waitUntil(
+            async () => (await sheetTitle(page)) === caseKeyLabel(keys[1] ?? ''),
+            { timeoutMs: 10_000, message: '按 J 后标题未在 10s 内切到渲染顺序第 2 行' },
+          );
           expect(await sheetTitle(page), '按 J 应切到渲染顺序的第 2 行').toBe(
             caseKeyLabel(keys[1] ?? ''),
           );
 
           // ---- K：上一条 ----
           await page.keyboard.press('k');
-          await page.waitForTimeout(400);
+          await waitUntil(
+            async () => (await sheetTitle(page)) === caseKeyLabel(keys[0] ?? ''),
+            { timeoutMs: 10_000, message: '按 K 后标题未在 10s 内回到渲染顺序第 1 行' },
+          );
           expect(await sheetTitle(page), '按 K 应回到渲染顺序的第 1 行').toBe(
             caseKeyLabel(keys[0] ?? ''),
           );
@@ -219,7 +241,18 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
               d.appendChild(el);
               el.focus();
             })()`);
-            await page.waitForTimeout(150);
+            // 等探针真的拿到焦点（activeElement 条件成立），而不是等固定 150ms。
+            await waitUntil(
+              async () => {
+                const a = (await page.evaluate(
+                  "(() => { const a = document.activeElement; return a === null ? 'null' : a.tagName + (a.getAttribute('contenteditable') === 'true' ? '[contenteditable]' : ''); })()",
+                )) as string;
+                return a.includes(
+                  kind === 'contenteditable' ? 'contenteditable' : kind.toUpperCase(),
+                );
+              },
+              { timeoutMs: 10_000, message: `探针 ${kind} 未在 10s 内获得焦点` },
+            );
 
             const focused = await page.evaluate(
               "(() => { const a = document.activeElement; return a === null ? 'null' : a.tagName + (a.getAttribute('contenteditable') === 'true' ? '[contenteditable]' : ''); })()",
@@ -229,7 +262,7 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
             );
 
             await page.keyboard.press('j');
-            await page.waitForTimeout(400);
+            await settle(page);
 
             expect(
               await sheetTitle(page),
@@ -284,7 +317,7 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
           await page.evaluate(
             "(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })); })()",
           );
-          await page.waitForTimeout(500);
+          await settle(page);
 
           expect(
             await sheetTitle(page),
@@ -295,7 +328,10 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
           await page.evaluate(
             "(() => { const d = document.querySelector('[role=\"dialog\"]'); d.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })); })()",
           );
-          await page.waitForTimeout(500);
+          await waitUntil(
+            async () => (await sheetTitle(page)) === caseKeyLabel(keys[1] ?? ''),
+            { timeoutMs: 10_000, message: '抽屉内 keydown 后标题未在 10s 内切到第 2 行' },
+          );
           expect(
             await sheetTitle(page),
             '抽屉内的 keydown 必须切换 case（证明监听确实挂上了）',
@@ -307,7 +343,7 @@ describe.skipIf(FIXTURE === null || LAUNCHER === null)(
           await page.evaluate(
             "(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })); })()",
           );
-          await page.waitForTimeout(500);
+          await settle(page);
           expect(await sheetOpen(page), '抽屉关闭后按 J 不得把抽屉重新打开').toBe(false);
         } finally {
           await browser.close();

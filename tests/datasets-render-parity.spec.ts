@@ -484,7 +484,20 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null)(
               ta.dispatchEvent(new Event('input', { bubbles: true }));
             })()`,
           );
-          await page.waitForTimeout(300);
+          // 等 React 把受控 textarea 的合成 input 提交进状态，而不是等固定 300ms：
+          // 「校验」按钮是 `disabled={busy || content === ''}` —— 提交前 content
+          // 还是旧值时按钮禁用，提交后启用。按钮启用即提交完成的 DOM 可见证据；
+          // 早于它点击要么被 Playwright 拒（disabled），要么校验到空内容。
+          await waitUntil(
+            async () =>
+              (await page.evaluate(
+                `(() => { const b = [...document.querySelectorAll('button')].find((x) => (x.textContent || '').trim() === '校验'); return b !== null && !b.disabled; })()`,
+              )) as boolean,
+            {
+              timeoutMs: 10_000,
+              message: '粘贴后「校验」按钮未在 10s 内启用（React 未提交输入或面板坏了）',
+            },
+          );
 
           await page.locator('button', { hasText: '校验' }).first().click();
 

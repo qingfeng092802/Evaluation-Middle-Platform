@@ -48,6 +48,28 @@ async function waitForText(page: PwPage, text: string, timeoutMs = 15_000): Prom
   );
 }
 
+/** 抽屉标题里显示的 case key（与各用例里的标题探针同一选择器）。 */
+async function drawerKey(page: PwPage): Promise<string> {
+  return (await page.evaluate(
+    `(() => (document.querySelector('[role="dialog"] [class*="num text-sm"]')?.textContent || '').trim())()`,
+  )) as string;
+}
+
+/**
+ * 两帧 `requestAnimationFrame`：**负向断言的沉淀条件**（替代固定 waitForTimeout）。
+ *
+ * 「事件派发后标题**不得**变化」等不出条件——条件等待只能等「发生」，等不了
+ * 「不发生」。两帧 rAF 给 React 一个完整的「事件 → 状态 → 渲染 → 绘制」机会：
+ * keydown 是离散事件，其状态提交在绘制前同步冲刷，若监听错挂在 window，
+ * 标题会在两帧内变化；两帧后仍未变即为确定性证据，不再依赖拍脑袋的毫秒数。
+ */
+async function settle(page: PwPage): Promise<void> {
+  await page.evaluate(
+    // 浏览器里跑的是纯 JS：不能写 TS 泛型 `new Promise<void>`（会 SyntaxError）。
+    '(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r()))))()',
+  );
+}
+
 const CMP = { confirmed: '', other: '' };
 
 beforeAll(async () => {
@@ -239,20 +261,19 @@ describe.skipIf(LAUNCHER === null || SKIP_REASON !== null)(
         await page.evaluate(
           `(() => { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })); })()`,
         );
-        await page.waitForTimeout(500);
-        const afterBody = (await page.evaluate(
-          `(() => (document.querySelector('[role="dialog"] [class*="num text-sm"]')?.textContent || '').trim())()`,
-        )) as string;
+        await settle(page);
+        const afterBody = await drawerKey(page);
         expect(afterBody, 'body 级 keydown 不得切换 case——否则监听挂在了 window').toBe(firstKey);
 
         // 反向确认：容器内派发必须触发（否则上一条是「功能整个坏了」的假绿）
         await page.evaluate(
           `(() => { const d = document.querySelector('[role="dialog"]'); d.dispatchEvent(new KeyboardEvent('keydown', { key: 'j', bubbles: true })); })()`,
         );
-        await page.waitForTimeout(500);
-        const afterContainer = (await page.evaluate(
-          `(() => (document.querySelector('[role="dialog"] [class*="num text-sm"]')?.textContent || '').trim())()`,
-        )) as string;
+        await waitUntil(
+          async () => (await drawerKey(page)) === secondKey,
+          { timeoutMs: 10_000, message: '容器级 keydown 后标题未在 10s 内切到第二条' },
+        );
+        const afterContainer = await drawerKey(page);
         expect(afterContainer, '容器级 keydown 必须能切换 case').toBe(secondKey);
       } finally {
         await page.close();
@@ -312,17 +333,16 @@ describe.skipIf(LAUNCHER === null || SKIP_REASON !== null)(
         );
         await page.evaluate(`(() => document.getElementById('pg04-probe-input').focus())()`);
         await page.keyboard.press('j');
-        await page.waitForTimeout(500);
-        const still = (await page.evaluate(
-          `(() => (document.querySelector('[role="dialog"] [class*="num text-sm"]')?.textContent || '').trim())()`,
-        )) as string;
+        await settle(page);
+        const still = await drawerKey(page);
         expect(still, '焦点在 textarea 内时 J 不得切换 case').toBe(firstKey);
         await page.evaluate(`(() => document.getElementById('pg04-probe-input')?.remove())()`);
         await page.keyboard.press('j');
-        await page.waitForTimeout(500);
-        const moved = (await page.evaluate(
-          `(() => (document.querySelector('[role="dialog"] [class*="num text-sm"]')?.textContent || '').trim())()`,
-        )) as string;
+        await waitUntil(
+          async () => (await drawerKey(page)) === secondKey,
+          { timeoutMs: 10_000, message: '移除临时输入后按 J 未在 10s 内切到第二条' },
+        );
+        const moved = await drawerKey(page);
         expect(moved, '移除临时输入后 J 恢复切换').toBe(secondKey);
       } finally {
         await page.close();
