@@ -1,12 +1,13 @@
 'use client';
 
-import * as React from 'react';
 import { Suspense } from 'react';
+import * as React from 'react';
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { RunComparisonDiffResponse } from '@eval-platform/contracts';
 import type { EvalRun } from '@eval-platform/contracts';
 import { AppShellWithTheme } from '@/components/shell/app-shell';
+import { CaseDiffSheet } from '@/components/compare/case-diff-sheet';
 import { CompareBanner } from '@/components/compare/compare-banner';
 import { MetricDeltaBadge } from '@/components/ui/metric-delta-badge';
 import { OperatorRadar } from '@/components/charts/operator-radar';
@@ -49,6 +50,27 @@ function CompareContent(): React.ReactElement {
     ready ? `/api/compare/diff?baselineRunId=${String(baseline)}&currentRunId=${String(current)}` : null,
   );
   const [operatorView, setOperatorView] = React.useState<'chart' | 'table'>('chart');
+  /** 打开中的 PG-04 抽屉对应的 case_key（null = 关闭）。J/K 按逐条列表顺序循环推进。 */
+  const [openDiffKey, setOpenDiffKey] = React.useState<string | null>(null);
+  /**
+   * Esc 关闭时 openDiffKey 已被重置为 null——用 ref 捕获「最后打开的 key」供焦点归还。
+   * Radix 对无 Trigger 的受控 Dialog 默认把焦点归还 content（实测落到 body），
+   * 「归还触发元素」（DESIGN §4.3/§6.3）必须由调用方在此手动完成。
+   */
+  const lastOpenDiffKeyRef = React.useRef<string | null>(null);
+  const openDiff = React.useCallback(
+    (caseKey: string) => {
+      lastOpenDiffKeyRef.current = caseKey;
+      setOpenDiffKey(caseKey);
+    },
+    [],
+  );
+  const handleCloseAutoFocus = React.useCallback(() => {
+    const key = lastOpenDiffKeyRef.current;
+    if (key !== null) {
+      (document.querySelector(`button[data-case-key="${key}"]`) as HTMLElement | null)?.focus();
+    }
+  }, []);
   const data = diff.data;
 
   if (!ready) {
@@ -69,6 +91,10 @@ function CompareContent(): React.ReactElement {
         data={data}
         operatorView={operatorView}
         setOperatorView={setOperatorView}
+        openDiffKey={openDiffKey}
+        setOpenDiffKey={setOpenDiffKey}
+        onOpenDiff={openDiff}
+        onCloseAutoFocus={handleCloseAutoFocus}
         refreshing={diff.refreshing}
       />
     );
@@ -99,11 +125,19 @@ function ComparePageBody({
   data,
   operatorView,
   setOperatorView,
+  openDiffKey,
+  setOpenDiffKey,
+  onOpenDiff,
+  onCloseAutoFocus,
   refreshing,
 }: {
   data: RunComparisonDiffResponse;
   operatorView: 'chart' | 'table';
   setOperatorView: (v: 'chart' | 'table') => void;
+  openDiffKey: string | null;
+  setOpenDiffKey: (v: string | null | ((prev: string | null) => string | null)) => void;
+  onOpenDiff: (caseKey: string) => void;
+  onCloseAutoFocus: () => void;
   refreshing: boolean;
 }): React.ReactElement {
   const banner = compareBannerView(data.baselineConfirmed, data.banner);
@@ -119,6 +153,10 @@ function ComparePageBody({
     { label: '不可比', value: data.summary.notComparableCases },
     { label: '总 Case', value: data.summary.totalCases },
   ];
+
+  const sheetIdx =
+    openDiffKey === null ? -1 : data.cases.findIndex((c) => c.caseKey === openDiffKey);
+  const sheetRow = sheetIdx === -1 ? null : (data.cases[sheetIdx] ?? null);
 
   return (
     <div aria-busy={refreshing} className="flex flex-col gap-4">
@@ -169,12 +207,33 @@ function ComparePageBody({
       <section className="flex flex-col gap-2">
         <h2 className="text-xs font-medium text-muted-foreground">逐条对比</h2>
         <DataTable
-          columns={caseColumns}
+          columns={caseColumns(onOpenDiff)}
           rows={data.cases}
           getRowId={(c) => c.caseKey}
           refreshing={refreshing}
         />
       </section>
+
+      {/* PG-04 双栏 Diff 抽屉：J/K 循环推进；Esc 关闭（Radix）+ 焦点归还触发按钮
+          （onCloseAutoFocus 由 CompareContent 提供，从 ref 读最后打开的 key） */}
+      <CaseDiffSheet
+        open={sheetRow !== null}
+        onOpenChange={(o) => {
+          if (!o) setOpenDiffKey(null);
+        }}
+        onCloseAutoFocus={onCloseAutoFocus}
+        row={sheetRow}
+        index={sheetIdx === -1 ? 0 : sheetIdx}
+        count={data.cases.length}
+        onNavigate={(delta) =>
+          setOpenDiffKey((prev) => {
+            if (prev === null || data.cases.length === 0) return prev;
+            const at = data.cases.findIndex((c) => c.caseKey === prev);
+            const next = ((at === -1 ? 0 : at) + delta + data.cases.length) % data.cases.length;
+            return data.cases[next]?.caseKey ?? prev;
+          })
+        }
+      />
     </div>
   );
 }
@@ -227,38 +286,48 @@ function OperatorTable({ rows }: { rows: ReturnType<typeof operatorTableRows> })
   return <DataTable columns={columns} rows={rows} getRowId={(r) => r.evaluatorKey} />;
 }
 
-/** 逐条对比列（`pages-and-flows.md` PG-08 区域 3 逐字；「查看 Diff」按钮指向 Batch 4 的 PG-04）。 */
-const caseColumns: readonly DataTableColumn<RunComparisonDiffResponse['cases'][number]>[] = [
-  { id: 'caseKey', header: 'case_key', cell: (c) => <span className="num text-xs">{c.caseKey}</span> },
-  {
-    id: 'baselineScore',
-    header: '基线得分',
-    numeric: true,
-    cell: (c) => <span className="num">{c.baselineScore === null ? '不可比' : formatScore(c.baselineScore)}</span>,
-    sortValue: (c) => c.baselineScore ?? -1,
-  },
-  {
-    id: 'currentScore',
-    header: '当前得分',
-    numeric: true,
-    cell: (c) => <span className="num">{c.currentScore === null ? '不可比' : formatScore(c.currentScore)}</span>,
-    sortValue: (c) => c.currentScore ?? -1,
-  },
-  {
-    id: 'delta',
-    header: '变化',
-    cell: (c) => <span className="num">{c.delta === null ? '不可比' : formatDelta(c.delta)}</span>,
-  },
-  {
-    id: 'openDiff',
-    header: '操作',
-    cell: () => (
-      <Button variant="outline" size="sm" disabled title="PG-04 双栏 Diff 属 Batch 4 交付，本批未实现">
-        查看 Diff
-      </Button>
-    ),
-  },
-];
+/** 逐条对比列（`pages-and-flows.md` PG-08 区域 3；「查看 Diff」点亮 PG-04 双栏抽屉）。 */
+function caseColumns(
+  onOpenDiff: (caseKey: string) => void,
+): readonly DataTableColumn<RunComparisonDiffResponse['cases'][number]>[] {
+  return [
+    { id: 'caseKey', header: 'case_key', cell: (c) => <span className="num text-xs">{c.caseKey}</span> },
+    {
+      id: 'baselineScore',
+      header: '基线得分',
+      numeric: true,
+      cell: (c) => <span className="num">{c.baselineScore === null ? '不可比' : formatScore(c.baselineScore)}</span>,
+      sortValue: (c) => c.baselineScore ?? -1,
+    },
+    {
+      id: 'currentScore',
+      header: '当前得分',
+      numeric: true,
+      cell: (c) => <span className="num">{c.currentScore === null ? '不可比' : formatScore(c.currentScore)}</span>,
+      sortValue: (c) => c.currentScore ?? -1,
+    },
+    {
+      id: 'delta',
+      header: '变化',
+      cell: (c) => <span className="num">{c.delta === null ? '不可比' : formatDelta(c.delta)}</span>,
+    },
+    {
+      id: 'openDiff',
+      header: '操作',
+      cell: (c) => (
+        <Button
+          variant="outline"
+          size="sm"
+          data-case-key={c.caseKey}
+          aria-label={`查看 Diff：${c.caseKey}`}
+          onClick={() => onOpenDiff(c.caseKey)}
+        >
+          查看 Diff
+        </Button>
+      ),
+    },
+  ];
+}
 
 export default function RunsComparePage(): React.ReactElement {
   return (

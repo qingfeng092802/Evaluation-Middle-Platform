@@ -4,6 +4,9 @@ import * as React from 'react';
 import { useSyncExternalStore } from 'react';
 import { getRole, setRole, subscribeRole, type PlatformRole } from '@/lib/ui/role';
 
+/** SSR 快照：服务端无 localStorage，恒为默认 A（与首帧渲染一致，防 hydration 抖动）。 */
+const getServerRole = (): PlatformRole => 'A';
+
 /**
  * 角色切换（MVP，需求方 2026-11-15 裁定 1）。
  *
@@ -21,7 +24,7 @@ const ROLES: ReadonlyArray<{ readonly value: PlatformRole; readonly label: strin
 ];
 
 export function RoleSwitcher(): React.ReactElement {
-  const role = useSyncExternalStore(subscribeRole, getRole);
+  const role = useSyncExternalStore(subscribeRole, getRole, getServerRole);
   return (
     <label className="flex items-center gap-1.5 text-xs text-muted-foreground">
       <span>角色</span>

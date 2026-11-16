@@ -84,6 +84,12 @@ export interface CaseDiffSheetProps {
   readonly count: number;
   /** `J`（下一条）/ `K`（上一条）导航回调，由父级按逐条列表顺序推进。 */
   readonly onNavigate: (delta: -1 | 1) => void;
+  /**
+   * 关闭时的焦点归还钩子。Radix 对**无 Trigger 的受控 Dialog** 默认把焦点
+   * 归还给 content（实测落到 body）——「归还触发元素」（DESIGN §4.3/§6.3）必须
+   * 由调用方在此钩子里手动完成（preventDefault 后自行 focus）。
+   */
+  readonly onCloseAutoFocus?: (event: Event) => void;
 }
 
 export function CaseDiffSheet({
@@ -93,6 +99,7 @@ export function CaseDiffSheet({
   index,
   count,
   onNavigate,
+  onCloseAutoFocus,
 }: CaseDiffSheetProps): React.ReactElement {
   /**
    * Sheet 容器（M1 惯例）：state 持有 DOM 节点——Radix Portal 内容 open 后才
@@ -160,6 +167,11 @@ export function CaseDiffSheet({
       <SheetContent
         ref={setSheetEl}
         aria-label={row === null ? undefined : `Case ${row.caseKey} 对比详情`}
+        onCloseAutoFocus={(e) => {
+          if (onCloseAutoFocus === undefined) return;
+          e.preventDefault();
+          onCloseAutoFocus(e);
+        }}
       >
         <SheetHeader>
           <div className="min-w-0 flex-1">
