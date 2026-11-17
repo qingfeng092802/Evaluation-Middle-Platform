@@ -17,18 +17,24 @@ describe('NAV_SECTIONS · 只允许 4 个分区（pages-and-flows §0.3）', () 
     expect(NAV_SECTIONS.map((s) => s.title)).toEqual(['运行', '资产', '算子', '管理']);
   });
 
-  it('M2 可点的页面：/runs、/runs/new、/datasets、/targets、/settings', () => {
+  it('M4 可点的页面：/runs、/runs/new、/datasets、/targets、/settings、/evaluators、/ledger', () => {
     const enabled = NAV_SECTIONS.flatMap((s) => s.items)
       .filter((i) => i.disabled !== true)
       .map((i) => i.href);
-    expect(enabled).toEqual(['/runs', '/runs/new', '/datasets', '/targets', '/settings']);
+    expect(enabled).toEqual([
+      '/runs',
+      '/runs/new',
+      '/datasets',
+      '/targets',
+      '/evaluators',
+      '/settings',
+      '/ledger',
+    ]);
   });
 
-  it('P1 项一律置灰并带 P1 标记（不得是死链）', () => {
+  it('当前没有置灰项（P1 全部交付；新增置灰项必须同时更新本断言与占位文案）', () => {
     const p1 = NAV_SECTIONS.flatMap((s) => s.items).filter((i) => i.disabled === true);
-    // M2 交付 PG-09 后只剩 /evaluators
-    expect(p1.map((i) => i.href)).toEqual(['/evaluators']);
-    for (const item of p1) expect(item.badge).toBe('P1');
+    expect(p1).toEqual([]);
   });
 
   it('每个分区至少有一项（空分区在侧栏里只是一个孤立标题）', () => {

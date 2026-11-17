@@ -21,7 +21,7 @@ import {
   refreshRunProgress,
 } from '../db/repo/evalRuns.js';
 import { listCases } from '../db/repo/datasets.js';
-import { getT1ExecutionConfig } from '../db/repo/targets.js';
+import { resolveTargetExecution } from '../db/repo/targets.js';
 import { getProviderForExecution } from '../db/repo/modelProviders.js';
 import { insertResult, listDoneCaseKeys } from '../db/repo/evalCaseResults.js';
 import { executeCase, specFromRunEvaluator } from '../lib/runner/execute-case.js';
@@ -144,11 +144,15 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
     const priceSnapshot: PriceSnapshotEntry[] =
       (detail.configSnapshot as SnapshotShape | undefined)?.priceSnapshot ?? [];
 
-    const target = await getT1ExecutionConfig(detail.targetVersionId);
+    const target = await resolveTargetExecution(detail.targetVersionId);
     if (!target) throw new Error(`run ${runId} 的目标版本不可执行`);
 
-    const provider = await getProviderForExecution(target.modelProviderId);
-    if (!provider) throw new Error(`run ${runId} 的厂商不可用`);
+    // T1 走网关必须有可用厂商；T2 直连被测端点，不经网关（US-021）。
+    const provider =
+      target.kind === 't1_prompt' ? await getProviderForExecution(target.modelProviderId) : null;
+    if (target.kind === 't1_prompt' && !provider) {
+      throw new Error(`run ${runId} 的厂商不可用`);
+    }
 
     const [cases, done, evaluatorRows] = await Promise.all([
       listCases(detail.datasetVersionId),
@@ -169,10 +173,19 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
     // 并发度取 min(run.concurrency, provider.max_concurrency)：用户意图（run）
     // 可以被物理上限（厂商）压低，反过来不行。`effConcurrency` 记在日志里，
     // 否则「慢」只会被归因到网关，而真实原因是厂商只给了 2 个并发。
-    const effConcurrency = effectiveConcurrency({
-      runConcurrency: detail.concurrency || CONCURRENCY_DEFAULT,
-      providerMaxConcurrency: provider.maxConcurrency,
-    });
+    // T2 无厂商上限，按 run 意图执行。
+    const effConcurrency =
+      target.kind === 't1_prompt' && provider
+        ? effectiveConcurrency({
+            runConcurrency: detail.concurrency || CONCURRENCY_DEFAULT,
+            providerMaxConcurrency: provider.maxConcurrency,
+          })
+        : {
+            effective: detail.concurrency || CONCURRENCY_DEFAULT,
+            runLimit: detail.concurrency || CONCURRENCY_DEFAULT,
+            providerLimit: null,
+            cappedBy: 'run' as const,
+          };
     log(
       `run ${runId} 并发生效值 ${String(effConcurrency.effective)} ` +
         `（run=${String(effConcurrency.runLimit)}，厂商=${String(effConcurrency.providerLimit)}，` +
@@ -180,7 +193,8 @@ export async function processRun(runId: string, claimEpoch: number): Promise<voi
     );
     // 闸门按**厂商**共享：同一厂商被两个 run 同时使用时，各自开一个 p-limit
     // 会让厂商看到 2×上限。这里取共享实例，保证进程内单厂商不超发。
-    const limit = providerLimiter(provider.id, effConcurrency.effective);
+    // T2 没有共享厂商，闸门退化为按 run 隔离。
+    const limit = providerLimiter(target.kind === 't1_prompt' && provider ? provider.id : `run:${runId}`, effConcurrency.effective);
 
     const resolveJudgeChat = await buildJudgeChatResolver(evaluators);
 

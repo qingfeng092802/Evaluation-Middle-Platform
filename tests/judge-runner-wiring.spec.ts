@@ -118,6 +118,7 @@ function baseInput(resolveJudgeChat: (cfg: JudgeEvaluatorConfig) => JudgeChat | 
     runId: '55555555-5555-5555-5555-555555555555',
     case: datasetCase,
     target: {
+      kind: 't1_prompt' as const,
       modelProviderId: PROVIDER_ID,
       modelId: 'target-model',
       promptTemplate: '{{input}}',

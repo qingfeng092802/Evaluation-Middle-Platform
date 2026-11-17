@@ -85,33 +85,28 @@ describe('PlaceholderPage · 渲染里程碑原文', () => {
 // 路由文件本身：必须存在，且**不得取数据**
 // ---------------------------------------------------------------------------
 
-const ROUTES: readonly { file: readonly string[]; key: PlaceholderKey }[] = [
-  { file: ['app', 'evaluators', 'page.tsx'], key: 'pg07' },
-];
+// M4 · Batch 4 交付 PG-07 后，`/evaluators` 已从占位升级为真实页面。
+// 占位路由清单清空；其守卫反转为「已接线」断言（见下方 describe）。
+const ROUTES: readonly { file: readonly string[]; key: PlaceholderKey }[] = [];
 
 describe('占位路由 · 文件存在且不连数据', () => {
-  it('两个 route 文件都在', async () => {
+  it('剩余占位路由（若有）仍不连数据', async () => {
     for (const r of ROUTES) {
       const src = await readFile(resolve(ROOT, ...r.file), 'utf8');
       expect(src.length).toBeGreaterThan(0);
-    }
-  });
-
-  it('每个 route 都引用自己的 noticeKey（不复制粘贴错位）', async () => {
-    for (const r of ROUTES) {
-      const src = await readFile(resolve(ROOT, ...r.file), 'utf8');
       expect(src).toContain(`noticeKey="${r.key}"`);
-    }
-  });
-
-  it('占位页不得调用 useApi / fetch / apiGet（不连数据）', async () => {
-    for (const r of ROUTES) {
-      const src = await readFile(resolve(ROOT, ...r.file), 'utf8');
       expect(src).not.toContain('useApi');
       expect(src).not.toContain('fetch(');
       expect(src).not.toContain('apiGet');
       expect(src).not.toContain('@eval-platform/contracts');
     }
+  });
+
+  it('/evaluators 已从占位升级为真实页面（M4 Batch 4 交付 PG-07）', async () => {
+    const src = await readFile(resolve(ROOT, 'app', 'evaluators', 'page.tsx'), 'utf8');
+    // 必须连真数据（旧守卫的否定之否定）：走 useApi + 契约响应解析
+    expect(src).toContain('useApi');
+    expect(src).toContain('EvaluatorTemplateListResponse');
   });
 
   it('占位页是无状态的服务端组件（没有 use client / useState）', async () => {
@@ -128,9 +123,10 @@ describe('占位路由 · 文件存在且不连数据', () => {
 // ---------------------------------------------------------------------------
 
 describe('占位路由与侧栏的关系', () => {
-  it('/evaluators 仍是置灰项（M2 只交付 PG-09，PG-07 属 M4）', async () => {
+  it('/evaluators 不再置灰（M4 Batch 4 已交付 PG-07，入口可点）', async () => {
     const src = await readFile(resolve(ROOT, 'lib', 'ui', 'nav.ts'), 'utf8');
-    expect(src).toMatch(/href:\s*'\/evaluators'[^}]*disabled:\s*true/);
+    expect(src).not.toMatch(/href:\s*'\/evaluators'[^}]*disabled:\s*true/);
+    expect(src).toContain("href: '/evaluators'");
   });
 
   it('/settings 不再是占位：M2 已交付「模型网关」Tab，侧栏入口必须可点', async () => {

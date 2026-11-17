@@ -33,6 +33,7 @@ import {
   type PriceDraft,
   type ProviderDraft,
 } from '@/lib/ui/providers';
+import { ChannelsSection } from './channels-section';
 
 /**
  * `PG-09` · 管理配置 —— **模型网关 Tab**（`US-015`，M2 · Batch 2）。
@@ -52,12 +53,18 @@ import {
 const PENDING_TABS: readonly { readonly label: string; readonly milestone: string }[] = [
   { label: '门禁规则', milestone: 'M4' },
   { label: '基线确认', milestone: 'M4' },
-  { label: '推送渠道', milestone: 'M4' },
 ];
+
+type SettingsTab = 'providers' | 'channels';
+
+function tabOf(t: SettingsTab): string {
+  return t === 'providers' ? '模型网关' : '推送渠道';
+}
 
 export default function SettingsPage(): React.ReactElement {
   const providers = useApi(ModelProviderListResponse, '/api/providers');
   const [editing, setEditing] = React.useState<Provider | null>(null);
+  const [tab, setTab] = React.useState<SettingsTab>('providers');
 
   const items = providers.data?.items ?? [];
 
@@ -65,24 +72,36 @@ export default function SettingsPage(): React.ReactElement {
     <AppShellWithTheme
       breadcrumbs={[{ label: '管理' }, { label: '管理配置' }]}
       actions={
-        <Button asChild size="sm">
-          <a href="#provider-form">
-            <Plus className="h-3.5 w-3.5" aria-hidden="true" /> 新建厂商
-          </a>
-        </Button>
+        tab === 'providers' ? (
+          <Button asChild size="sm">
+            <a href="#provider-form">
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" /> 新建厂商
+            </a>
+          </Button>
+        ) : null
       }
     >
       <div className="mx-auto flex w-full max-w-[1200px] flex-col gap-4">
         <h1 className="text-base font-semibold text-foreground">管理配置</h1>
 
-        {/* Tab 条：只有「模型网关」是可用的，其余标注归属里程碑（不是死链）。 */}
+        {/* Tab 条：模型网关 / 推送渠道可切换；其余标注归属里程碑（不是死链）。 */}
         <div className="flex flex-wrap items-center gap-2 border-b border-border pb-2">
-          <span
-            aria-current="page"
-            className="rounded-md bg-muted px-3 py-1 text-sm font-medium text-foreground"
+          <button
+            type="button"
+            onClick={() => setTab('providers')}
+            aria-current={tab === 'providers' ? 'page' : undefined}
+            className={cnTab(tab === 'providers')}
           >
-            模型网关
-          </span>
+            {tabOf('providers')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('channels')}
+            aria-current={tab === 'channels' ? 'page' : undefined}
+            className={cnTab(tab === 'channels')}
+          >
+            {tabOf('channels')}
+          </button>
           {PENDING_TABS.map((t) => (
             <span key={t.label} className="px-3 py-1 text-sm text-muted-foreground">
               {t.label}（{t.milestone} 上线）
@@ -90,26 +109,39 @@ export default function SettingsPage(): React.ReactElement {
           ))}
         </div>
 
-        <ProviderSection
-          providers={items}
-          loading={providers.loading}
-          error={providers.error?.message ?? null}
-          onChanged={() => {
-            providers.reload();
-          }}
-          editing={editing}
-          setEditing={setEditing}
-        />
+        {tab === 'providers' ? (
+          <>
+            <ProviderSection
+              providers={items}
+              loading={providers.loading}
+              error={providers.error?.message ?? null}
+              onChanged={() => {
+                providers.reload();
+              }}
+              editing={editing}
+              setEditing={setEditing}
+            />
 
-        <PriceSection
-          providers={items}
-          onCreated={() => {
-            providers.reload();
-          }}
-        />
+            <PriceSection
+              providers={items}
+              onCreated={() => {
+                providers.reload();
+              }}
+            />
+          </>
+        ) : (
+          <ChannelsSection />
+        )}
       </div>
     </AppShellWithTheme>
   );
+}
+
+/** Tab 条按钮的激活样式（激活 = muted 底；未激活 = 纯文字）。 */
+function cnTab(active: boolean): string {
+  return active
+    ? 'rounded-md bg-muted px-3 py-1 text-sm font-medium text-foreground'
+    : 'rounded-md px-3 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground';
 }
 
 // ---------------------------------------------------------------------------
