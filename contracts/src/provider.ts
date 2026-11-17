@@ -215,8 +215,14 @@ export type ModelProviderProbeResult = z.infer<typeof ModelProviderProbeResult>;
 // 成本台账（PG-10，P1）
 // ---------------------------------------------------------------------------
 
-/** 台账维度。与 PG-10 的「维度切换」一致。 */
-export const CostLedgerDimension = z.enum(['model', 'dataset', 'user']);
+/**
+ * 台账维度。与 PG-10 的「维度切换」一致。
+ *
+ * US-019 四维（SPEC-M4 Q5 裁定 = 按 US-019 执行）：时间 / 模型 / 评测集 / 发起人。
+ * 时间维 = 按 UTC 日分桶的分组维度（`dimensionKey` 为 ISO 日期）；
+ * 时间**窗口**由 `CostLedgerQuery.from/to` 表达，两者互补。
+ */
+export const CostLedgerDimension = z.enum(['time', 'model', 'dataset', 'user']);
 export type CostLedgerDimension = z.infer<typeof CostLedgerDimension>;
 
 export const CostLedgerQuery = z.object({
@@ -234,11 +240,17 @@ export const CostLedgerSummary = z.object({
   costJudge: Money,
   costTotal: Money,
   runCount: z.number().int().min(0),
+  /**
+   * T2 目标调用中端点未回传 usage 的 case 数（US-021：成本记 unknown）。
+   * 这些 case 的成本按 0 计入上面各列，但语义是「未知」而非真实零成本——
+   * 消费方（PG-10 页面 / CI）必须据此标注，不得把 0 读成「这单没花钱」。
+   */
+  unknownCostCases: z.number().int().min(0),
 });
 export type CostLedgerSummary = z.infer<typeof CostLedgerSummary>;
 
 export const CostLedgerRow = z.object({
-  /** 维度键：模型 id / 评测集名 / 发起人。 */
+  /** 维度键：ISO 日期 / 模型 id / 评测集 id / 发起人。 */
   dimensionKey: z.string(),
   label: z.string(),
   tokensIn: z.number().int().min(0),
@@ -247,5 +259,7 @@ export const CostLedgerRow = z.object({
   costJudge: Money,
   costTotal: Money,
   runCount: z.number().int().min(0),
+  /** 同 Summary.unknownCostCases，但归属到本维度分组。 */
+  unknownCostCases: z.number().int().min(0),
 });
 export type CostLedgerRow = z.infer<typeof CostLedgerRow>;

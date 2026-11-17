@@ -145,9 +145,12 @@ export const Target = z.object({
 export type Target = z.infer<typeof Target>;
 
 /**
- * P0 期 T2 是否可选。
+ * T2 是否可选。
  *
  * 单点开关，而不是散落在前端各处的 `if (kind === 't2_http')`：
  * P1 接入 T2 时只改这一处。
+ *
+ * M4 · Batch 4（`US-021` 落地）：T2 外部 HTTP Target 已接入——PG-06 表单可建
+ * `t2_http` 目标，执行器可对其发起调用（`authHeader` 密文入库、响应与日志不回显）。
  */
-export const TARGET_T2_ENABLED = false as const;
+export const TARGET_T2_ENABLED = true as const;

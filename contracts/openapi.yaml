@@ -451,7 +451,9 @@ paths:
     post:
       tags: [targets]
       summary: 新建目标（同时生成 v1）
-      description: P0 只接受 `kind='t1_prompt'`；`t2_http` 在 P1 接入（PG-06 中置灰）。
+      description: >-
+        T1（t1_prompt）与 T2（t2_http）均可创建。T2 的 authHeader 只写不读，
+        落 auth_header_ciphertext 密文列，读取侧只回 hasAuthHeader（US-021）。
       requestBody:
         required: true
         content:
@@ -963,7 +965,7 @@ paths:
           schema: { type: string, format: date-time }
         - name: dimension
           in: query
-          schema: { type: string, enum: [model, dataset, user], default: model }
+          schema: { type: string, enum: [time, model, dataset, user], default: model }
         - $ref: '#/components/parameters/limit'
         - $ref: '#/components/parameters/cursor'
       responses:
@@ -1908,7 +1910,7 @@ components:
 
     CostLedgerSummary:
       type: object
-      required: [tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount]
+      required: [tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount, unknownCostCases]
       properties:
         tokensIn: { type: integer }
         tokensOut: { type: integer }
@@ -1916,10 +1918,13 @@ components:
         costJudge: { type: number }
         costTotal: { type: number }
         runCount: { type: integer }
+        unknownCostCases:
+          type: integer
+          description: T2 目标调用中端点未回传 usage 的 case 数（US-021）；成本按 0 计入但语义是 unknown
 
     CostLedgerRow:
       type: object
-      required: [dimensionKey, label, tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount]
+      required: [dimensionKey, label, tokensIn, tokensOut, costTarget, costJudge, costTotal, runCount, unknownCostCases]
       properties:
         dimensionKey: { type: string }
         label: { type: string }
@@ -1929,3 +1934,6 @@ components:
         costJudge: { type: number }
         costTotal: { type: number }
         runCount: { type: integer }
+        unknownCostCases:
+          type: integer
+          description: 同 Summary.unknownCostCases，归属到本维度分组
