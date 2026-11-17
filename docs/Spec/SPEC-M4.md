@@ -1,9 +1,11 @@
 # SPEC-M4 · CI/CD 回归门禁、安全加固与全局成本对账台账（MVP 收官）
 
-> **状态**：**v0.2 —— 九项裁定（Q0–Q8）已于 2026-11-16 全部回填**（见 §1 各条「裁定」行
-> 与 §1.10 汇总表）；**Q0：M3 复核 REJECT，Batch 1（遗留补验）推迟至 M3 修补完成并复核
-> 通过**；Q1 采用 **C 拉取模式**（事实源现状维持，推入模式顺延 M5）。Batch 2–4 按
-> 需求方 2026-11-16 指令并行推进。
+> **状态**：**v0.3（2026-11-18）—— Q0 已解除**：第二次独立复核 **ACCEPT**（`Spec/M3-复核记录.md`），
+> M3 经需求方指令链合并（merge `2dec565` + tag `v0.1.0-m3`，均已推远端）；Batch 1 的两项
+> 凭证/环境闸门（M2 补验、U-1）仍 ⬜，与 Batch 5 一并补位。此前 **v0.2 —— 九项裁定
+> （Q0–Q8）已于 2026-11-16 全部回填**（见 §1 各条「裁定」行与 §1.10 汇总表）；Q1 采用
+> **C 拉取模式**（事实源现状维持，推入模式顺延 M5）。Batch 2–4 已完成并推送（分支
+> `feat/m4-gates`，见 `HANDOFF.md` v2 §1.1）。
 > **上位事实源**：`docs/Spec/milestones.md` §5（M4 范围 / 关键约束 / 完成判定）、
 > `docs/HANDOFF.md` §5.6（M4 准入义务：M2 未验证项已补验）、`docs/facts/user-stories.md`
 > （`US-016` `US-017` `US-018` `US-019` `US-021`）、`docs/facts/pages-and-flows.md`
@@ -21,11 +23,11 @@
 
 | # | 检查项 | 判定方法 | 状态 |
 |---|---|---|---|
-| 1 | **M3 已合并入 `main` 并打 `v0.1.0-m3`** | `git fetch origin --tags && git log --oneline origin/main -1` 应包含 M3 提交链；`git tag -l` 应含 `v0.1.0-m3` | 🔴 **待核实（2026-11-17 实测不符）**：origin/main = `1a4c00e`（不含 M3），tag 仅 `v0.1.0-m1`/`v0.1.0-m2`，M3 分支 `feat/m3-baseline-chain`（tip `82f7088`）**未合并**。见 §1.9-Q0 |
-| 2 | **M2 未验证项补验**（HANDOFF §5.6 准入义务） | LiteLLM 真容器（`docker compose --profile gateway up`）跑一次真实 LLM-as-a-Judge；真实厂商网关连通；浏览器 `EventSource` | ⬜ 待执行（Batch 1 准入闸门） |
-| 3 | **U-1 彻底关闭**（CI Windows 环境 H-11 + `taskkill /T /F` 分支验证） | CI 或另一台 Windows 机器跑 `tests/heartbeat-worker.spec.ts` H-11 用例，断言 `taskkill /T /F` 分支真实执行；跑通后更新 `M1-验收记录.md` | ⬜ 待执行（Batch 1 准入闸门） |
-| 4 | **M3 完成判定全部满足**（milestones §4.5 五条） | 独立复核会话结论 `ACCEPT` | ⬜ 待复核会话 |
-| 5 | **本 SPEC §1 待确认（Q1–Q8）已全部裁定** | 见 §1 | ⬜ 待需求方裁定 |
+| 1 | **M3 已合并入 `main` 并打 `v0.1.0-m3`** | `git fetch origin --tags && git log --oneline origin/main -1` 应包含 M3 提交链；`git tag -l` 应含 `v0.1.0-m3` | ✅ **已解除（2026-11-18）**：merge `2dec565` / tag `v0.1.0-m3`，origin/main 与三个里程碑 tag 均已在远端（`git ls-remote --tags origin` 复验）。历史：2026-11-17 实测不符（origin/main = `1a4c00e`）→ 全程见 §1.10 Q0 |
+| 2 | **M2 未验证项补验**（HANDOFF §5.6 准入义务） | LiteLLM 真容器（`docker compose --profile gateway up`）跑一次真实 LLM-as-a-Judge；真实厂商网关连通；浏览器 `EventSource` | ⬜ **受阻（2026-11-18 实勘）**：本机无 `.env`、无 `tools/litellm/gateway.env`、无真实厂商 Key，物理不可执行；待需求方提供凭证后与 Batch 5 一并补位（`Spec/M3-复核记录.md` §7） |
+| 3 | **U-1 彻底关闭**（CI Windows 环境 H-11 + `taskkill /T /F` 分支验证） | CI 或另一台 Windows 机器跑 `tests/heartbeat-worker.spec.ts` H-11 用例，断言 `taskkill /T /F` 分支真实执行；跑通后更新 `M1-验收记录.md` | ⬜ **维持挂起（2026-11-18）**：本机复核 run4 中该 spec 3 条全绿（SIGKILL 路径），但按固定口径本机不构成关闭；`taskkill /T /F` 分支待 CI / 另一台 Windows 确认（`Spec/M3-复核记录.md` §6/§7） |
+| 4 | **M3 完成判定全部满足**（milestones §4.5 五条） | 独立复核会话结论 `ACCEPT` | ✅ **ACCEPT（2026-11-18 第二次复核会话，全新上下文）**：五条全过 + 门禁全绿（typecheck/lint:design/check:datasets-render 0，npm test 63 files / 781 passed / 0 skipped / 0 failed）；正式留档 `Spec/M3-复核记录.md` |
+| 5 | **本 SPEC §1 待确认（Q1–Q8）已全部裁定** | 见 §1 | ✅ **已裁定（2026-11-16 需求方，回填见 §1.10）**——本行此前为未随 v0.2 回改的滞后状态，2026-11-18 更正 |
 | 6 | 门禁数据底座已在 M1 就位 | `regression_gates` / `gate_evaluations` 表 + 不可变触发器（0013/0014）| ✅ 已核实（无新表迁移即支持规则 CRUD 与留痕） |
 
 ---
@@ -96,7 +98,7 @@ Batch 2/Batch 3 内容与 §3 不做什么清单。
 
 | # | 议题 | 裁定 |
 |---|---|---|
-| Q0 | M3 合并与 tag | **复核 REJECT**（waitForTimeout 未清理 + SPEC-M3 §6 自检记录未写）。不能合并、不能打 `v0.1.0-m3`；**Batch 1（U-1 CI 关闭 + M2 未验证补验）无限期推迟**至 M3 修补完成并复核通过 |
+| Q0 | M3 合并与 tag | **复核 REJECT**（waitForTimeout 未清理 + SPEC-M3 §6 自检记录未写）。不能合并、不能打 `v0.1.0-m3`；**Batch 1（U-1 CI 关闭 + M2 未验证补验）无限期推迟**至 M3 修补完成并复核通过 → **2026-11-18 解除**：修补 `27f83d1` / `25cd0ce` + 第二次独立复核 **ACCEPT**（`Spec/M3-复核记录.md`）→ 需求方指令链合并 `2dec565` + tag `v0.1.0-m3`（已推远端）；Batch 1 剩余两项转受阻，见 §0 检查 2/3 |
 | Q1 | CI 集成架构 | **C 拉取模式全盘采用**；推入模式（PR 触发 + 回传）顺延 M5 |
 | Q2 | Webhook 签名 | **顺延**（随推入模式归 M5） |
 | Q3 | 三级门禁 | 展示标签；判定复用现有 `GateCondition` 模型，不扩数据结构 |
@@ -112,6 +114,10 @@ Batch 2/Batch 3 内容与 §3 不做什么清单。
 > 「M4 前置 = M3 完成判定」的原始顺序存在**已批准的偏离**，见 §5 差异表。
 > 另：M3 修补会话已提交 `27f83d1`（三份测试文件的条件等待替换，51/51 绿），
 > 但 **SPEC-M3 §6 自检记录仍为空模板**——修补未完，复核前提未兑现。
+>
+> **2026-11-18 更新**：上句滞后状态已解除——`25cd0ce` 补齐自检记录；第二次独立复核
+> **ACCEPT**（正式留档 `Spec/M3-复核记录.md`）。合并说明（`2dec565`）缺 SPEC-M3 §6.4
+> 义务原句「U-1 未验证，待 CI 确认」一事，已在该记录 §5.5/§6 存档并补写。
 
 ### Q2 · Webhook 签名算法与防重放（若 Q1 裁定含推入模式）
 
@@ -339,12 +345,12 @@ jsonb）/ `gate_evaluations`（留痕，不可变）/ `eval_runs.cost_*`（台�
 
 | 项 | 原始编排（milestones §5 / 事实源） | 口头预期 / 实际 | 状态 |
 |---|---|---|---|
-| CI 集成方向 | CI **拉取** JSON；平台永不持有 GitHub PAT | 口头预期：平台**接收** PR Webhook 触发跑批 + **回传** Commit Status / PR 评论 | ⏸ **Q1 待裁定**（本 SPEC 建议态 = C 分层折中） |
-| 门禁模型 | 单条件 `GateCondition`（BLOCK/WARN） | 口头预期：「三级门禁 L1/L2/L3」 | ⏸ **Q3 待裁定**（建议 = 分类标签映射现有模型） |
-| 台账维度 | 时间 / 模型 / 评测集 / 发起人 | 口头预期：按项目 / 模型 / 时间段 | ⏸ **Q5 待裁定**（建议 = 按 US-019 四维） |
-| 成本大盘页面 | `PG-10` | 口头预期：PG-09 | ⏸ **Q6 待裁定**（建议 = 按事实源 PG-10） |
-| `US-016` / `US-021` | milestones §5.2 明列 | 口头预期批次拆解未点名 | ⏸ **Q7 待裁定**（建议 = 保留在 M4） |
-| M3 合并 / tag | — | 口头预期「已合并/打 tag」 | 🔴 **实测未合并**（见 §0 检查 1 / Q0） |
+| CI 集成方向 | CI **拉取** JSON；平台永不持有 GitHub PAT | 口头预期：平台**接收** PR Webhook 触发跑批 + **回传** Commit Status / PR 评论 | ✅ **Q1 已裁定（2026-11-16）= C 拉取模式**；推入模式顺延 M5 |
+| 门禁模型 | 单条件 `GateCondition`（BLOCK/WARN） | 口头预期：「三级门禁 L1/L2/L3」 | ✅ **Q3 已裁定（2026-11-16）= 展示标签，复用现有模型** |
+| 台账维度 | 时间 / 模型 / 评测集 / 发起人 | 口头预期：按项目 / 模型 / 时间段 | ✅ **Q5 已裁定（2026-11-16）= 按 US-019 四维** |
+| 成本大盘页面 | `PG-10` | 口头预期：PG-09 | ✅ **Q6 已裁定（2026-11-16）= 按事实源 PG-10** |
+| `US-016` / `US-021` | milestones §5.2 明列 | 口头预期批次拆解未点名 | ✅ **Q7 已裁定（2026-11-16）= 保留在 M4，T2 落 Batch 4** |
+| M3 合并 / tag | — | 口头预期「已合并/打 tag」 | ✅ **已合并（2026-11-18）**：merge `2dec565` + tag `v0.1.0-m3` 已推远端；此前 🔴 实测未合并的全程见 §1.10 Q0 |
 
 ---
 
