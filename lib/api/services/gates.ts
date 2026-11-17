@@ -50,13 +50,30 @@ import {
   listGatesByDataset,
   updateGate as repoUpdateGate,
 } from '../../../db/repo/gates.js';
-import { ConflictError, NotFoundError, UnauthorizedError } from '../http.js';
+import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../http.js';
+import { getBaselineRow } from '../../../db/repo/baselines.js';
 
 /** MVP 单机标识（与 `baselines` 服务同口径；OUT-4 不做用户体系）。 */
 const LOCAL_ACTOR = 'local';
 
+/** 固定历史基线的写入侧校验：pin 必须存在且属于同一评测集（脏配置挡在写入侧）。 */
+async function assertPinnableBaseline(baselineId: string, datasetId: string): Promise<void> {
+  const row = await getBaselineRow(baselineId);
+  if (row === null) throw new NotFoundError('固定的历史基线不存在');
+  if (row.datasetId !== datasetId) {
+    throw new BadRequestError('baselineId 与评测集不匹配（跨集 pin 会把别的评测集的锚点偷过来）', {
+      baselineId,
+      gateDatasetId: datasetId,
+      baselineDatasetId: row.datasetId,
+    });
+  }
+}
+
 export async function createGate(raw: unknown): Promise<RegressionGate> {
   const input = RegressionGateCreate.parse(raw);
+  if (input.baselineId !== undefined && input.baselineId !== null) {
+    await assertPinnableBaseline(input.baselineId, input.datasetId);
+  }
   return repoCreateGate({
     name: input.name,
     datasetId: input.datasetId,
@@ -86,12 +103,22 @@ export async function updateGate(gateIdRaw: string, raw: unknown): Promise<Regre
     action?: string;
     isActive?: boolean;
     channels?: unknown[];
+    baselineId?: string | null;
   } = {};
   if (patchInput.name !== undefined) patch.name = patchInput.name;
   if (patchInput.condition !== undefined) patch.condition = patchInput.condition;
   if (patchInput.action !== undefined) patch.action = patchInput.action;
   if (patchInput.isActive !== undefined) patch.isActive = patchInput.isActive;
   if (patchInput.channels !== undefined) patch.channels = patchInput.channels;
+  if (patchInput.baselineId !== undefined) {
+    // `null` = 清除 pin（回到「用当前已确认基线」）；非 null = 换锚，仍要过写入侧校验
+    if (patchInput.baselineId !== null) {
+      const gate = await getGateRow(gateId);
+      if (gate === null) throw new NotFoundError('门禁规则不存在');
+      await assertPinnableBaseline(patchInput.baselineId, gate.datasetId);
+    }
+    patch.baselineId = patchInput.baselineId;
+  }
   const updated = await repoUpdateGate(gateId, patch);
   if (updated === null) throw new NotFoundError('门禁规则不存在');
   return updated;
@@ -241,19 +268,31 @@ export async function evaluateRunGates(runIdRaw: string): Promise<GateResultEnve
   const confirmedRun = confirmedRunId !== null ? await getRun(confirmedRunId) : null;
 
   const current = { scoreOverall: run.metrics.scoreOverall, passRate: run.metrics.passRate };
-  const baseline = confirmedRun
-    ? { scoreOverall: confirmedRun.metrics.scoreOverall, passRate: confirmedRun.metrics.passRate }
-    : null;
 
   const insertedGates: Array<{ id: string; channels: GateChannel[]; name: string }> = [];
   for (const gate of gates) {
     if (await hasEvaluation(gate.id, runId)) continue; // 幂等：留痕已在，跳过
 
-    // regression_pct 需要已确认基线 run；无确认基线 ⇒ 跳过（不判定不留痕）
-    if (gate.condition.metric === 'regression_pct' && confirmedRun === null) continue;
-    if (gate.baselineId !== null) continue; // 固定历史基线的求值属 Batch 4 扩展，本批跳过
+    // 逐规则锚点（契约注释：「null = 用当前已确认基线；非 null = 固定到某次历史基线」）：
+    //  - 无 pin ⇒ 已确认基线 run（BL-2 唯一锚点）；
+    //  - 有 pin ⇒ 它固定的那条 baselines 行的 eval_run_id；
+    //  - pin 行不存在 / REJECTED / 跨评测集 / 锚 run 缺失 ⇒ 跳过（不判定不留痕，
+    //    与「无已确认基线」同一 fail-closed 语义——跳过不等于通过）。
+    let anchorRun = confirmedRun;
+    if (gate.baselineId !== null) {
+      const pinned = await getBaselineRow(gate.baselineId);
+      if (pinned === null || pinned.status === 'REJECTED' || pinned.datasetId !== gate.datasetId) continue;
+      anchorRun = await getRun(pinned.evalRunId);
+      if (anchorRun === null) continue;
+    }
 
-    const evalResult = evaluateCondition(gate.condition, current, baseline);
+    // regression_pct 需要锚点 run；无锚点 ⇒ 跳过（不判定不留痕）
+    if (gate.condition.metric === 'regression_pct' && anchorRun === null) continue;
+    const gateBaseline =
+      anchorRun !== null
+        ? { scoreOverall: anchorRun.metrics.scoreOverall, passRate: anchorRun.metrics.passRate }
+        : null;
+    const evalResult = evaluateCondition(gate.condition, current, gateBaseline);
     await insertGateEvaluation({
       gateId: gate.id,
       evalRunId: runId,

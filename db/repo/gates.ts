@@ -95,6 +95,8 @@ export interface UpdateGatePatch {
   action?: string;
   isActive?: boolean;
   channels?: unknown[];
+  /** `null` = 清除固定基线 pin（回到「用当前已确认基线」）。 */
+  baselineId?: string | null;
 }
 
 export async function updateGate(id: string, patch: UpdateGatePatch): Promise<RegressionGate | null> {
@@ -119,6 +121,10 @@ export async function updateGate(id: string, patch: UpdateGatePatch): Promise<Re
   if (patch.channels !== undefined) {
     params.push(JSON.stringify(patch.channels));
     sets.push(`channels = $${params.length}::jsonb`);
+  }
+  if (patch.baselineId !== undefined) {
+    params.push(patch.baselineId);
+    sets.push(`baseline_id = $${params.length}::uuid`);
   }
   const row = await queryOne<GateRow>(
     `UPDATE regression_gates SET ${sets.join(', ')} WHERE id = $1 RETURNING ${GATE_COLUMNS}`,
