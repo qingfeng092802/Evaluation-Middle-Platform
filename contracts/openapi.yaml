@@ -1043,6 +1043,7 @@ components:
       enum:
         - VALIDATION_FAILED
         - NOT_FOUND
+        - UNAUTHORIZED
         - CONFLICT
         - IMMUTABLE_VIOLATION
         - ILLEGAL_STATE_TRANSITION
