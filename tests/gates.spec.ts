@@ -16,7 +16,12 @@
  */
 import { NextRequest } from 'next/server';
 import { afterAll, beforeEach, describe, expect, it } from 'vitest';
-import { GateResultResponse, RegressionGate, RegressionGateListResponse } from '@eval-platform/contracts';
+import {
+  CallbackTokenResponse,
+  GateResultResponse,
+  RegressionGate,
+  RegressionGateListResponse,
+} from '@eval-platform/contracts';
 import { databaseUrl, dropAndRecreateSchema, migrate } from '../db/migrate.js';
 import { closeDb, getPool } from '../db/schema/index.js';
 import { buildCompareWorld, type CompareWorld } from './support/compare-fixtures.js';
@@ -24,17 +29,22 @@ import { restoreSeed } from './support/fixtures.js';
 
 import * as gatesRoute from '../app/api/gates/route.js';
 import * as gateIdRoute from '../app/api/gates/[gateId]/route.js';
+import * as tokenRoute from '../app/api/gates/[gateId]/callback-token/route.js';
 import * as resultsRoute from '../app/api/gates/results/[runId]/route.js';
 
 const DB_URL = process.env['DATABASE_URL'];
 const BASE = 'http://localhost:3000';
 
-function req(path: string, init?: { method?: string; body?: unknown }): NextRequest {
+function req(
+  path: string,
+  init?: { method?: string; body?: unknown; headers?: Record<string, string> },
+): NextRequest {
   return new NextRequest(`${BASE}${path}`, {
     method: init?.method ?? 'GET',
+    ...(init?.headers === undefined ? {} : { headers: init.headers }),
     ...(init?.body === undefined
       ? {}
-      : { body: JSON.stringify(init.body), headers: { 'content-type': 'application/json' } }),
+      : { body: JSON.stringify(init.body), headers: { 'content-type': 'application/json', ...init.headers } }),
   });
 }
 
@@ -74,6 +84,31 @@ async function confirmBaseline(datasetId: string, evalRunId: string): Promise<vo
      VALUES ($1, $2, 'CONFIRMED', 'gates-test', 'local', 'local', now())`,
     [datasetId, evalRunId],
   );
+}
+
+/**
+ * 拉取鉴权（Batch 3，Q1=C）：为本评测集签发一个回调 Token。
+ * 无任何规则时先建一条锚点规则再停用（Token 绑定规则不筛 is_active，
+ * 停用后判定引擎视之为无规则——保住 NO_GATE 场景）。
+ */
+async function issueToken(datasetId: string): Promise<string> {
+  let gateId = (
+    await getPool().query<{ id: string }>('SELECT id FROM regression_gates WHERE dataset_id = $1 LIMIT 1', [datasetId])
+  ).rows[0]?.id;
+  if (!gateId) {
+    await gatesRoute.POST(
+      req('/api/gates', {
+        method: 'POST',
+        body: { name: 'token-anchor', datasetId, condition: { metric: 'score_overall', op: '<', value: 1 } },
+      }),
+    );
+    gateId = (
+      await getPool().query<{ id: string }>('SELECT id FROM regression_gates WHERE dataset_id = $1 LIMIT 1', [datasetId])
+    ).rows[0]!.id;
+    await gateIdRoute.PATCH(req('/api/gates', { method: 'PATCH', body: { isActive: false } }), params({ gateId }));
+  }
+  const res = await tokenRoute.POST(req('/api/gates', { method: 'POST' }), params({ gateId }));
+  return CallbackTokenResponse.parse(await res.json()).token;
 }
 
 beforeEach(async () => {
@@ -201,7 +236,8 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
         },
       }),
     );
-    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const token = await issueToken(w.datasetId);
+    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     expect(res.status).toBe(200);
     const body = GateResultResponse.parse(await res.json());
     expect(body.gateResult.overall).toBe('FAIL');
@@ -221,7 +257,7 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
     expect(rows.rows[0]?.count).toBe('1');
 
     // 幂等：重复求值不重复留痕
-    await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     const rows2 = await getPool().query<{ count: string }>(
       'SELECT count(*)::text AS count FROM gate_evaluations WHERE eval_run_id = $1',
       [w.currentRunId],
@@ -231,7 +267,8 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
 
   it('无规则 → NO_GATE', async () => {
     const w = await worldWithScores();
-    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const token = await issueToken(w.datasetId); // 无规则场景：锚点规则建后即停用
+    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     const body = GateResultResponse.parse(await res.json());
     expect(body.gateResult.overall).toBe('NO_GATE');
     expect(body.gateResult.evaluations).toEqual([]);
@@ -250,7 +287,8 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
         },
       }),
     );
-    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const token = await issueToken(w.datasetId);
+    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     const body = GateResultResponse.parse(await res.json());
     expect(body.gateResult.overall).toBe('PASS');
     expect(body.gateResult.evaluations[0]?.passed).toBe(false);
@@ -260,6 +298,7 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
   it('L3 退化：regression_pct > 5（相对已确认基线）→ FAIL；delta 计算正确', async () => {
     const w = await worldWithScores();
     await confirmBaseline(w.datasetId, w.baselineRunId);
+    const token = await issueToken(w.datasetId);
     await gatesRoute.POST(
       req('/api/gates', {
         method: 'POST',
@@ -271,7 +310,7 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
         },
       }),
     );
-    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     const body = GateResultResponse.parse(await res.json());
     expect(body.gateResult.overall).toBe('FAIL');
     const detail = body.gateResult.evaluations[0]?.detail;
@@ -296,7 +335,8 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
         },
       }),
     );
-    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const token = await issueToken(w.datasetId);
+    const res = await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     const body = GateResultResponse.parse(await res.json());
     expect(body.gateResult.evaluations).toEqual([]);
     expect(body.gateResult.overall).toBe('NO_GATE');
@@ -316,15 +356,18 @@ describe('GET /api/gates/results/{runId} · 判定引擎（Q3：三级=标签，
         },
       }),
     );
-    await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`), params({ runId: w.currentRunId }));
+    const token = await issueToken(w.datasetId);
+    await resultsRoute.GET(req(`/api/gates/results/${w.currentRunId}`, { headers: { 'x-callback-token': token } }), params({ runId: w.currentRunId }));
     await expect(
       getPool().query(`UPDATE gate_evaluations SET passed = true WHERE eval_run_id = $1`, [w.currentRunId]),
     ).rejects.toThrow(/immutable|拒|无法/i);
   });
 
-  it('未知 runId → 404', async () => {
+  it('未知 runId → 404（合法 Token 持有者得到精确诊断；无 Token 者一律 401 不泄露存在性）', async () => {
+    const w = await worldWithScores();
+    const token = await issueToken(w.datasetId);
     const res = await resultsRoute.GET(
-      req('/api/gates/results/00000000-0000-4000-8000-000000000000'),
+      req('/api/gates/results/00000000-0000-4000-8000-000000000000', { headers: { 'x-callback-token': token } }),
       params({ runId: '00000000-0000-4000-8000-000000000000' }),
     );
     expect(res.status).toBe(404);

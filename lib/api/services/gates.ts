@@ -19,6 +19,7 @@
  * ## 身份
  * `created_by` 写 MVP 单机标识 `'local'`（与 `baselines` 服务同口径，OUT-4）。
  */
+import { randomBytes, createHash } from 'node:crypto';
 import {
   RegressionGateCreate,
   RegressionGateUpdate,
@@ -26,15 +27,21 @@ import {
   deriveGateOverall,
 } from '@eval-platform/contracts';
 import type {
+  GateChannel,
   GateCondition,
   GateEvaluationDetail,
   GateResultEnvelope,
   RegressionGate,
 } from '@eval-platform/contracts';
+import type { CallbackTokenResponse } from '@eval-platform/contracts';
 import { getRun } from '../../../db/repo/evalRuns.js';
 import { getConfirmedBaselineRunId } from '../../../db/repo/compare.js';
 import {
+  createCallbackToken,
   createGate as repoCreateGate,
+  findActiveCallbackToken,
+  getDatasetIdForRun,
+  getGateRow,
   getVersionContext,
   hasEvaluation,
   insertGateEvaluation,
@@ -43,7 +50,7 @@ import {
   listGatesByDataset,
   updateGate as repoUpdateGate,
 } from '../../../db/repo/gates.js';
-import { ConflictError, NotFoundError } from '../http.js';
+import { ConflictError, NotFoundError, UnauthorizedError } from '../http.js';
 
 /** MVP 单机标识（与 `baselines` 服务同口径；OUT-4 不做用户体系）。 */
 const LOCAL_ACTOR = 'local';
@@ -145,6 +152,77 @@ function evaluateCondition(
 }
 
 /**
+ * 签发 CI 回调 Token（明文仅返回一次；平台只存 SHA-256 哈希）。
+ * MVP 口径：expiresAt=null（不过期）。
+ */
+export async function registerCallbackToken(gateIdRaw: string): Promise<CallbackTokenResponse> {
+  const gateId = Uuid.parse(gateIdRaw);
+  const gate = await getGateRow(gateId);
+  if (gate === null) throw new NotFoundError('门禁规则不存在');
+  const token = randomBytes(32).toString('base64url');
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  await createCallbackToken({ gateId, tokenHash, createdBy: LOCAL_ACTOR });
+  return { token, expiresAt: null };
+}
+
+/**
+ * 拉取鉴权：`X-Callback-Token` 头的值 → SHA-256 → 反查明细；
+ * Token 绑定其门禁的评测集——跨评测集使用视为越权（401）。
+ *
+ * 顺序即语义：缺失/无效 Token 一律 401（不暴露 run 存在性）；
+ * 合法 Token + 未知 run ⇒ 404（持有效凭证者值得精确诊断）；
+ * 合法 Token + 跨评测集 run ⇒ 401（越权）。
+ */
+export async function verifyCallbackTokenForRun(
+  token: string | null,
+  runId: string,
+): Promise<void> {
+  if (token === null || token === '') throw new UnauthorizedError('回调 Token 缺失');
+  const tokenHash = createHash('sha256').update(token).digest('hex');
+  const row = await findActiveCallbackToken(tokenHash);
+  if (row === null) throw new UnauthorizedError('回调 Token 无效或已过期');
+  const datasetId = await getDatasetIdForRun(runId);
+  if (datasetId === null) throw new NotFoundError('运行不存在');
+  if (row.datasetId !== datasetId) {
+    throw new UnauthorizedError('回调 Token 与目标评测集不匹配');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 出站派发（US-018：评测结束后把结论推送到配置的渠道）
+// ---------------------------------------------------------------------------
+
+export interface GateDispatchSummary {
+  gateId: string;
+  gateName: string;
+  overall: string;
+  evalRunId: string;
+  runName: string;
+}
+
+/** 出站派发：逐 channel POST 其形状的载荷；失败只告警不阻塞（渠道不可达是常态）。 */
+export async function dispatchGateResult(channels: GateChannel[], summary: GateDispatchSummary): Promise<void> {
+  for (const ch of channels) {
+    try {
+      const body =
+        ch.kind === 'feishu'
+          ? { msg_type: 'text', content: { text: `【评测门禁】${summary.runName} 判定 ${summary.overall}（${summary.gateName}）` } }
+          : ch.kind === 'wecom'
+            ? { msgtype: 'markdown', markdown: { content: `**评测门禁** ${summary.runName}：${summary.overall}（${summary.gateName}）` } }
+            : summary;
+      await fetch(ch.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (err) {
+      console.warn(`[gates] 出站派发失败（${ch.kind} ${ch.url}）：`, (err as Error).message);
+    }
+  }
+}
+
+/**
  * 跑批终态 → 逐规则求值 → 留痕 → 信封组装（`GateResultEnvelope` 契约，形状逐字）。
  *
  * 幂等：同 (gate, run) 已有留痕时跳过插入、复用既有行；envelope 从留痕表回读，
@@ -167,13 +245,13 @@ export async function evaluateRunGates(runIdRaw: string): Promise<GateResultEnve
     ? { scoreOverall: confirmedRun.metrics.scoreOverall, passRate: confirmedRun.metrics.passRate }
     : null;
 
+  const insertedGates: Array<{ id: string; channels: GateChannel[]; name: string }> = [];
   for (const gate of gates) {
     if (await hasEvaluation(gate.id, runId)) continue; // 幂等：留痕已在，跳过
 
     // regression_pct 需要已确认基线 run；无确认基线 ⇒ 跳过（不判定不留痕）
     if (gate.condition.metric === 'regression_pct' && confirmedRun === null) continue;
-    // 固定历史基线（gate.baselineId 指向历史基线行）属 Batch 4 扩展，本批跳过
-    if (gate.baselineId !== null) continue;
+    if (gate.baselineId !== null) continue; // 固定历史基线的求值属 Batch 4 扩展，本批跳过
 
     const evalResult = evaluateCondition(gate.condition, current, baseline);
     await insertGateEvaluation({
@@ -187,6 +265,7 @@ export async function evaluateRunGates(runIdRaw: string): Promise<GateResultEnve
       op: evalResult.detail.op,
       value: evalResult.detail.value,
     });
+    insertedGates.push({ id: gate.id, channels: gate.channels, name: gate.name });
   }
 
   // envelope 从留痕表回读（库里有几行、信封就几条；只含本版本评测集的启用规则）
@@ -214,6 +293,18 @@ export async function evaluateRunGates(runIdRaw: string): Promise<GateResultEnve
 
   const overall = deriveGateOverall(evaluations);
   const versionContext = await getVersionContext(run.datasetVersionId);
+
+  // US-018 出站派发：仅对本轮**新判定**的规则推送其 channels（幂等拉取不重复打扰渠道）。
+  // 渠道不可达只告警不阻塞（dispatchGateResult 内部吞错）；阻塞语义由 CI 侧拉取 overall 决定。
+  for (const g of insertedGates) {
+    await dispatchGateResult(g.channels, {
+      gateId: g.id,
+      gateName: g.name,
+      overall,
+      evalRunId: runId,
+      runName: run.name,
+    });
+  }
 
   return {
     schemaVersion: '1',

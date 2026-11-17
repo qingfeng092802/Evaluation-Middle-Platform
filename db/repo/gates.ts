@@ -295,3 +295,50 @@ export async function getVersionContext(
   );
   return row ? { datasetId: row.dataset_id, targetId: row.target_id } : null;
 }
+
+// ---------------------------------------------------------------------------
+// callback_tokens（CI 回调 Token，M4 Batch 3；明文不落库，仅 SHA-256 哈希）
+// ---------------------------------------------------------------------------
+
+export interface CallbackTokenContext {
+  gateId: string;
+  datasetId: string;
+  expiresAt: Date | null;
+}
+
+export async function createCallbackToken(input: {
+  gateId: string;
+  tokenHash: string;
+  createdBy: string;
+}): Promise<void> {
+  await query(
+    `INSERT INTO callback_tokens (gate_id, token_hash, created_by)
+     VALUES ($1, $2, $3)`,
+    [input.gateId, input.tokenHash, input.createdBy],
+  );
+}
+
+/** 哈希反查明细（JOIN 门禁取评测集 id 供越权校验）；过期行视为不存在。 */
+export async function findActiveCallbackToken(tokenHash: string): Promise<CallbackTokenContext | null> {
+  const row = await queryOne<{ gate_id: string; dataset_id: string; expires_at: Date | string | null }>(
+    `SELECT t.gate_id, g.dataset_id, t.expires_at
+       FROM callback_tokens t
+       JOIN regression_gates g ON g.id = t.gate_id
+      WHERE t.token_hash = $1
+        AND (t.expires_at IS NULL OR t.expires_at > now())`,
+    [tokenHash],
+  );
+  return row ? { gateId: row.gate_id, datasetId: row.dataset_id, expiresAt: row.expires_at ? new Date(row.expires_at) : null } : null;
+}
+
+/** 某 run 所属评测集 id（拉取鉴权的越权校验需要）。 */
+export async function getDatasetIdForRun(runId: string): Promise<string | null> {
+  const row = await queryOne<{ dataset_id: string }>(
+    `SELECT dv.dataset_id
+       FROM eval_runs r
+       JOIN dataset_versions dv ON dv.id = r.dataset_version_id
+      WHERE r.id = $1`,
+    [runId],
+  );
+  return row?.dataset_id ?? null;
+}
