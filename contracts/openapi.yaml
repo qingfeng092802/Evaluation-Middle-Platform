@@ -811,14 +811,51 @@ paths:
         **平台对外只交付这一坨结构化 JSON**：不写 PR 评论、不持有 GitHub PAT、
         不知道 PR 号。CI 侧拉取后自行决定如何评论/阻断。
         `overall='NO_GATE'` 表示未配置任何规则，CI 不应阻断。
+        **鉴权（M4 Q1=C 裁定）**：请求必须携带 `X-Callback-Token` 头（值为
+        `POST /api/gates/{gateId}/callback-token` 签发的明文 Token）；缺失或无效
+        → 401。CI 不应把 401 当作门禁失败信号（401 = 鉴权问题，FAIL = 质量问题）。
       parameters:
         - $ref: '#/components/parameters/runId'
+        - name: X-Callback-Token
+          in: header
+          required: true
+          schema: { type: string }
       responses:
         '200':
           description: 门禁结果信封
           content:
             application/json:
               schema: { $ref: '#/components/schemas/GateResultEnvelope' }
+        '401':
+          description: 回调 Token 缺失或无效
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/gates/{gateId}/callback-token:
+    post:
+      tags: [gates]
+      summary: 签发 CI 回调 Token（明文仅返回一次）
+      description: |
+        为该门禁签发一个回调 Token。响应体里的 `token` 是**明文**，仅此一次可见；
+        平台只存 SHA-256 哈希，之后无法找回。CI 拉取门禁结果时以
+        `X-Callback-Token` 头携带。MVP 口径：expiresAt=null（不过期）。
+      parameters:
+        - name: gateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 已签发
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CallbackTokenResponse' }
+        '404':
+          description: 门禁规则不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
 
   # ---------------------------------------------------------------- providers
   /api/providers:
