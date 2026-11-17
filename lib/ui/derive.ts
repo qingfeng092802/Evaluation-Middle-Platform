@@ -203,8 +203,9 @@ export function blockerText(
 // 占位页（`SPEC-M1` §6.5 `T-3`，需求方 2026-11-10「方案 A」裁定）
 // ---------------------------------------------------------------------------
 
-/** 占位页的键。每个键对应 `pages-and-flows.md` 里一个**不在 M1** 的页面。 */
-export type PlaceholderKey = 'pg07' | 'pg08' | 'pg09';
+/** 占位页的键。每个键对应 `pages-and-flows.md` 里一个**不在已交付里程碑**的页面。
+ *  `pg08`（报告对比）已于 M3 转正为真实页面，不再是占位（2026-11-15）。 */
+export type PlaceholderKey = 'pg07' | 'pg09';
 
 export interface PlaceholderNotice {
   /** 需求文档里的页面编号，用户能对上 `pages-and-flows.md`。 */
@@ -222,22 +223,13 @@ export interface PlaceholderNotice {
 }
 
 /**
- * 三个占位页的原文。
+ * 两个占位页的原文（`pg08` 报告对比已随 M3 转正，见变更记录）。
  *
  * ⚠️ `milestone` 的取值**逐条对齐** `SPEC-M1` §1.1 与「M1 → M2 拆除清单」：
- * `PG-08` → M3、`PG-07` → M4、`PG-09` → M2（模型网关）/ M4（门禁规则）。
+ * `PG-07` → M4、`PG-09` → M2（模型网关）/ M4（门禁规则）。
  * 改这里等于改对用户的承诺，先改 SPEC。
  */
 export const PLACEHOLDER_NOTICES: Readonly<Record<PlaceholderKey, PlaceholderNotice>> = {
-  pg08: {
-    pageId: 'PG-08',
-    title: '报告对比',
-    milestone: 'M3',
-    message: '报告对比功能将在 M3 上线。',
-    reason:
-      '双版本对比依赖「已确认基线」，基线确认与门禁裁决在 M3 随 US-009 / US-020 一起交付；当前 Milestone 1 没有对比接口。',
-    fallback: { label: '回到评测运行台', href: '/runs' },
-  },
   pg07: {
     pageId: 'PG-07',
     title: '算子库',

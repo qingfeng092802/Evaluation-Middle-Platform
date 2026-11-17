@@ -402,8 +402,15 @@ interface GeometryProbe {
   readonly docClientWidth: number;
 }
 
-/** 名称列（第 0 列）**设计上就是两行**：主名称 + 「评测集 · 目标」副标题。 */
-const NAME_COL = 0;
+/**
+ * 列序（M3 起含勾选列）：页面层在 `runsTableColumns` 前插入了「对比所选」勾选列
+ * （`pages-and-flows.md` PG-01 批量操作，`US-009`），故浏览器探针的列序为：
+ * 第 0 列 = 勾选列（无文本，设计行数 0）；第 1 列 = 名称列（设计两行）。
+ * `runsTableColumns` 模块常量本身保持原 9 列（SSR 层断言不受影响）。
+ */
+const SELECT_COL = 0;
+const SELECT_COL_DESIGNED_LINES = 0;
+const NAME_COL = 1;
 const NAME_COL_DESIGNED_LINES = 2;
 
 /**
@@ -500,7 +507,12 @@ describe.skipIf(LIVE_ITEMS === null || LAUNCHER === null || !HAS_RUN_ROWS)(
               rows.forEach((tr) => {
                 [...tr.querySelectorAll('td')].forEach((td, col) => {
                   const lines = textLineTops(td);
-                  const designed = col === ${String(NAME_COL)} ? ${String(NAME_COL_DESIGNED_LINES)} : 1;
+                  const designed =
+                    col === ${String(SELECT_COL)}
+                      ? ${String(SELECT_COL_DESIGNED_LINES)}
+                      : col === ${String(NAME_COL)}
+                        ? ${String(NAME_COL_DESIGNED_LINES)}
+                        : 1;
                   if (lines !== designed) {
                     wrappedCells.push({
                       col,

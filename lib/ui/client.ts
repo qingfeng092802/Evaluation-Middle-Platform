@@ -13,6 +13,7 @@
  */
 import type { ApiError, ErrorCode } from '@eval-platform/contracts';
 import { z } from 'zod';
+import { getRole } from './role.js';
 
 /** 一次失败的业务语义。页面据此决定展示哪段原文。 */
 export class ApiClientError extends Error {
@@ -97,6 +98,9 @@ async function send<T extends z.ZodTypeAny>(
   const url = `${options.baseUrl ?? ''}${path}`;
 
   const headers: Record<string, string> = { accept: 'application/json' };
+  // MVP 角色模拟（裁定 1）：所有请求统一携带 X-Role（缺省 A）。
+  // 服务端只有 decision 路由读它（非 B → 403 FORBIDDEN）；其余路由忽略该头。
+  headers['x-role'] = getRole();
   const init: RequestInit = { method, headers };
   if (method !== 'GET') {
     headers['content-type'] = 'application/json';

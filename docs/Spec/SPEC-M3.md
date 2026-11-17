@@ -96,6 +96,19 @@ M3 新增的 `PG-08` 与 `PG-04` 双栏都含表格 / 双栏布局，断言档�
   但**不强制断言 1024**；修完复核 `/runs`、`/datasets`、`/targets` 三页 1440 档读数不回退。
 - **口径联动**：`SPEC-M2` §1.4 的「已知缺陷、不修」被本裁定**取代**；「1024 只断言不折行」的
   既有边界不变。
+- **✅ 复核关闭（2026-11-15 · Batch 3 前置件）**：根因修复完成并实测归零。真实根因有**两层，缺一不可**——
+  ① `DataTable` 滚动容器缺 `max-w-full`（表格 min-content 1133px 把容器撑出视口）；
+  ② 容器缺 `position: relative`——容器内 8 个 `position:absolute` 的 `sr-only` span（各列排序朗读文案）
+  的包含块因此落到**初始包含块（根）**，最右一个静态位置落在 x=1336，把 `documentElement.scrollWidth`
+  撑到 1337（1024 视口实测横向可滚 313px；穿透 overflow:hidden/clip 的 container/main/body/html
+  四层——机制是 **ICB 包含块逃逸**，不是溢出传播，故裁剪无效）。
+  修复 = 容器类名加 `max-w-full` + `relative`（一行，全部 DataTable 页面同治）。
+  实测（1024 视口真实浏览器，修复前 → 后）：/runs 1337 / 可滚 313px → **1024 / 0**；
+  /datasets 1056 / 可滚 32px → **1024 / 0**；/targets 1024/0 → 1024/0。1440 档 parity 40/40 零回归。
+  **T-5 关闭。** 诊断存档：五轮控制变量探针（逐层量宽 / overflow 链 / abs 扫描 / 二分隔离）+
+  两轮机器二分（实验 1 逐列隐藏锁定第 0 列；实验 2 包含块链锁定 sr-only ICB 逃逸并活体验证
+  relative 修复），临时探针文件量完即删。同类风险已审计：`stream-connection-indicator.tsx` 与
+  `sidebar.tsx` 的 sr-only 均在 1024 视口内静态位置，无 T-5 级溢出（低风险，随观察）。
 
 ### 1.2 `HANDOFF.md` §4.6 的 8 处可判定固定等待是否在本里程碑清理
 
@@ -314,6 +327,18 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 
 ### Batch 1 · Baseline 提名 / 确认链路（串行先行）
 
+> **实现前提（2026-11-15 需求方裁定，Batch 1 编码依据；聊天记录外的唯一落点）**
+>
+> 1. **角色传输**：MVP 阶段角色由 **`X-Role: A|B` 请求头模拟（缺省 `A`）**——「会话上下文」
+>    的 MVP 替身，不引入登录鉴权（OUT-4）。`decision` 仅 ROLE-B，非 B → 403；提名是
+>    ROLE-A 能力，不拦。约定写入路由文件头注释。
+> 2. **身份**：`nominated_by` / `decided_by` 写固定单机标识 **`'local'`**（MVP 占位值；
+>    PG-09 待审列表只展示运行名 / 理由 / 时间，不展示它；OUT-4 不做用户体系，勿虚构身份表）。
+> 3. **守卫（fail-closed）**：非 `COMPLETED` / `PARTIAL_FAILED` 的 run 提名 → 409；同一 run
+>    重复提名 → 409；已有 CONFIRMED 基线时提名**仍允许**（进待审队列），唯一性由确认时的
+>    `ux_baselines_one_confirmed` 报 409 兜底。状态机本体由 `trg_baselines_guard`（0016）
+>    定义：仅 `NOMINATED → CONFIRMED / REJECTED`，已裁定行冻结（re-decide → 409）。
+
 **包含任务**
 
 - `[BE-M3-01]` Baseline API（提名 / 决定 / 解析）
@@ -345,6 +370,25 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 ---
 
 ### Batch 2 · 对比引擎（`GET /api/compare` 与 `GET /api/compare/diff`）
+
+> **实现前提（2026-11-15 需求方裁定 + 前提修正，Batch 2 编码依据）**
+>
+> 0. **前提修正**：硬拒绝以 openapi 原文为准——`describeIncomparable()` 非空 →
+>    **400 VALIDATION_FAILED**，**不用 409**（openapi diff 描述「否则返回 400」，响应清单
+>    仅 200/400）。维度穷举仅「datasetVersionId 不同」与「同 run 自比」两个；
+>    targetVersionId / 算子集差异**不是**硬拒绝（契约函数不含），经 `alignmentWarning`
+>    与缺侧 null 呈现。
+> 1. **Q1 deltaPct** = (current − baseline) / baseline；baseline 为 null 或 **0** → null
+>    （绝不出 Infinity/NaN，不编造兜底值）。
+> 2. **Q2 算子并集**：baseline 的 `order_index` 在前，current 独有按自身 order_index
+>    追加尾部；缺侧 score=null → NOT_COMPARABLE。
+> 3. **Q3 分页少做**：全量返回，`page = { nextCursor: null, total: cases.length }`；
+>    契约 cursor 字段放着不实现，将来要分页直接填值不改响应形状。
+> 4. **Q4 null 透传**：run 的 pass_rate / coverage 等为 null → metric 行两侧 null、
+>    delta/deltaPct 全 null，照实反映数据不可用。
+> 5. metric `label` 取 metric key 本身（展示文案归 Batch 3 前端层）。
+> 6. `regressionThreshold` 查询参数在服务边界数字化（查询串恒为字符串，openapi 语义为
+>    number；NaN → 400）。
 
 **包含任务**
 
@@ -512,24 +556,94 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 
 ---
 
-## 6. 【研发自检记录】（Batch 4 完成后填写）
+## 6. 【研发自检记录】（2026-11-17 填写）
 
 > 本节由研发侧在 M3 最后一个 commit 前填写，对应 §2 Batch 4 准出条件。
 > **「已通过」只对实跑过的检查项成立**；未跑的项目必须显式列为「未验证」。
-> 当前为**空模板**。
+> **2026-11-17 填写**（独立验收复核 REJECT 的整改内容：781 基数更正与归因、固定等待清理独立笔、
+> 3 连跑全绿留档、`lint:design` / `check:datasets-render` 读数补齐）。
 
 ### 6.1 提交信息
 
-（待填：分支 / 基线 / 提交 / 合并状态。固定 Commit Hash 的自引用问题与处置方式照抄 `SPEC-M2` §6.1 —— 写可机械复验的定位方式，不写会过期的字面量。）
+| 项 | 值 |
+|---|---|
+| 分支 | `feat/m3-baseline-chain` |
+| 基线 | `main` = `1a4c00e` `docs(M2): technical-solution §5.1 入库与归属修正`（= `origin/main`，已同步） |
+| 提交 | **本笔提交**（M3 最后一个 commit） |
+| 合并 | **未合并 `main`**，等待需求方明确授权 |
+
+> **关于「固定 Commit Hash」的自引用说明（照抄 `SPEC-M2` §6.1 的处置）**：
+> §6 与本笔提交同属一个 commit，文件内容在写入时无法包含自身的 hash ——
+> 任何写进去的值都会在提交后立刻失效。因此给出**可机械复验的定位方式**：
+>
+> ```bash
+> git rev-parse feat/m3-baseline-chain          # 本笔提交
+> git log --oneline 1a4c00e..feat/m3-baseline-chain
+> ```
+>
+> 复核时的期望父链（**这些 hash 已固定**，可逐条 `git show` 校验）：
+>
+> | 顺序 | Hash | 标题 |
+> |---|---|---|
+> | 基线 | `1a4c00e` | `docs(M2): technical-solution §5.1 入库与归属修正` |
+> | 契约 | `5df0ac5` | `contracts(M3): ErrorCode 增补 FORBIDDEN 适配 403 鉴权失败`（§1.7 流程：独立笔、后续只读） |
+> | Batch 1 | `d1f54e5` | `feat(M3): Batch 1 Baseline 提名、确认与解析链路` |
+> | Batch 2 | `7ece760` | `feat(M3): Batch 2 对比引擎（compare 汇总 + diff 聚合）` |
+> | Batch 3 前置件 | `c854a02` | `fix(M3): T-5 根因修复 + Role Switcher（Batch 3 前置件）` |
+> | Batch 3 | `612cbea` | `feat(M3): Batch 3 PG-08 对比页 + /runs 对比所选闭环（占位转正）` |
+> | Batch 3 | `1f1bfa9` | `style(M3): PG-08 metric 标签中文化（映射 + fallback 到契约 label）` |
+> | Batch 3 | `2c2c417` | `feat(M3): PG-04 纯函数 diff 与 CaseDiffSheet 双栏抽屉组件` |
+> | Batch 3 | `82f7088` | `feat(M3): PG-04 抽屉接线 + Playwright 四断言 + /runs 勾选闭环（占位摘除）` |
+> | 插入笔 | `b2315a9` | `docs(M4): SPEC-M4 v0.1 草案（Q0–Q8 待裁定，未动业务代码）`——M4 起草文档笔，落在 M3 收尾期间，纯文档不改代码 |
+> | 收尾 | `27f83d1` | `test(M3): 替换固定等待为条件等待`（§1.2 要求的独立笔） |
+> | 收尾 | 本笔提交 | `docs(M3): 补齐研发自检记录与三连跑留档` |
+
+**固定等待清理后 3 连跑全绿读数（§1.2 完成要件，本表为正式留档）**：
+
+| 次 | 退出码 | Test Files | Tests | Duration | 完成时刻 |
+|---|---|---|---|---|---|
+| 1 | 0 | 63 passed (63) | **781 passed / 0 skipped** | 281.30s | 2026-11-17 01:28:38 |
+| 2 | 0 | 63 passed (63) | **781 passed / 0 skipped** | 278.12s | 2026-11-17 01:33:17 |
+| 3 | 0 | 63 passed (63) | **781 passed / 0 skipped** | 276.68s | 2026-11-17 01:37:55 |
+
+环境条件（三跑同栈，未重启）：Windows · Node v24.18.0 · vitest 2.1.9（`node_modules` 实装值）·
+`dev:all` 完整真栈常驻（`eval-platform-db` healthy :5433 + `next dev` :3000 + worker + fixture :8787）·
+dev 库**有数据态**（runs=9 / datasets=6，经 `check:datasets-render` 实读）· 测试库 `eval_platform_test`
+（`tests/setup/test-env.ts` 每进程改写 `DATABASE_URL`，与 dev 库物理隔离，串行 `fileParallelism=false`）·
+本机 Edge/Chromium 可用（浏览器用例全实跑）。三次日志中 skipped/todo 行计数均为 0 ——
+**跳过 ≠ 通过口径下无任何冒充**。
+
+**关于测试基数的更正与归因（782 → 781，如实记录，不回避）**：独立验收复核在 `82f7088` 实跑
+`npm test` 得 **781 passed / 0 skipped / 0 failed**（63 files，311.50s，exit 0），此前研发侧上报过 782。
+归因核查三条：① 分支全史 `git log --diff-filter=D --name-only -- tests/` 实证**无任何已删除的 spec 文件**；
+② 逐 commit 用例注册数折算（grep 口径相对 vitest 口径存在恒定 +8 偏移：main 712↔704、HEAD 789↔781），
+**没有任何 commit 折算出 782**；③ 全部 63 个 spec 为静态注册，无随库态变化的动态用例数。
+唯一自洽解释：782 取样时 `tests/` 下存在一个**未跟踪的临时探针 spec（恰好 1 条用例）**，事后删除——
+与 T-5 诊断「临时探针文件量完即删」的纪律吻合，未跟踪文件不留 git 痕迹，无法进一步取证。
+**自此 M3 的测试基数一律记 781 passed / 0 skipped。**
 
 ### 6.2 批次完成情况
 
-（待填：Batch 1–4 状态 / 主要交付物 / Commit。）
+| 批次 | 状态 | 主要交付物 | Commit |
+|---|---|---|---|
+| 契约 | ✅ 完成（预期零扩展之外的唯一缺口） | `ErrorCode` 增补 `FORBIDDEN`（decision 403 所需），独立成笔，其后只读 | `5df0ac5` |
+| Batch 1 · Baseline 提名 / 确认链路 | ✅ 完成 | `POST /api/baselines`（提名，`nominated_by` 写 `'local'`）· `POST /api/baselines/{id}/decision`（仅 ROLE-B：`X-Role` 头缺省 A，非 B → 403 `FORBIDDEN`）· `GET /api/baselines/resolution`；裁定 3 fail-closed 双 409（非 `COMPLETED/PARTIAL_FAILED` run、同 run 重复提名）服务层实现、测试锁定（`baselines.spec` 9 条 + `baselines-decision.spec` 8 条）；`ux_baselines_one_confirmed`（双基线 409）与 `trg_baselines_guard`（re-decide 409）库层兜底复用 | `d1f54e5` |
+| Batch 2 · 对比引擎 | ✅ 完成 | `GET /api/compare` + `GET /api/compare/diff`：`describeIncomparable()` 非空 → **400**（openapi 口径，不用 409）；`deltaPct` baseline 为 null/0 → null（无 Infinity/NaN）；算子并集 baseline 序在前、缺侧 `NOT_COMPARABLE`；算子 mean 分母 = 有效计分数（`baselineScoredCount` 回显）；分页少做（Q3）；null 指标透传（Q4）。测试锁定：`compare.spec`(5) / `compare-diff.spec`(8) / `diff.spec`(10) | `7ece760` |
+| Batch 3 · 前端工作台 | ✅ 完成 | 前置件：T-5 根因修复（`DataTable` 容器 `max-w-full` + `relative`，两层根因：容器无宽度钉死 + sr-only span 的 ICB 包含块逃逸；§1.1 已关闭留实测读数）+ `RoleSwitcher`（`useSyncExternalStore` 三参含 `getServerRole`）→ `c854a02`；`PG-08` 对比页 + `/runs` 对比所选闭环（占位转正）→ `612cbea`；metric 标签中文化 → `1f1bfa9`；`PG-04` 纯函数 diff（LCS）+ `CaseDiffSheet` 双栏抽屉 → `2c2c417`；抽屉接线 + `pg04-drawer.spec.ts` 8 用例（真实浏览器）+ 占位摘除 → `82f7088` | `c854a02` `612cbea` `1f1bfa9` `2c2c417` `82f7088` |
+| Batch 4 · 真栈联调与收尾 | ✅ 完成 | 固定等待清理**独立笔**：HANDOFF §4.6 台账 8 处 + pg04-drawer 自身新增 4 处，共 12 处清零（正向断言 → `waitUntil` 条件等待；负向断言 → 两帧 rAF 沉淀；parity 粘贴 → 「校验」按钮启用作条件），3 连跑全绿读数见 §6.1 → `27f83d1`；本节自检记录 → 本笔提交。真栈链路以测试形式实跑：`pg04-drawer` beforeAll 经真实 API 提名并确认基线（`X-Role: B`）后，浏览器驱动 `PG-08` → `PG-04` 全流程 | `27f83d1` + 本笔 |
 
 ### 6.3 机械门禁实测
 
-（待填：每条读数必须写明**环境条件**（种子态 / 有数据态 / 有 worker 态 / dev server 态）；
-`npm test` 必须写 **N passed / M skipped**，跳过 ≠ 通过。）
+环境条件：同 §6.1 三连跑（真栈常驻 · 有数据态 · 有 worker 态 · dev server 态）。
+
+| 门禁 | 命令 | 退出码 | 关键读数 |
+|---|---|---|---|
+| 类型（应用 + 契约 workspace） | `npm run typecheck` | **0** | `tsc --noEmit` 双 workspace 零错误 |
+| 静态 + 样式 + Token | `npm run lint:design` | **0** | `[check:tokens] 通过：116 个文件，无裸色值 / 渐变 / 内联样式`（M2 基线 98 文件，增量为 M3 新增组件） |
+| 跨层渲染对账（合并前人工门禁） | `npm run check:datasets-render` | **0** | `/datasets` `apiItems=6 renderedRows=6 statusCount=6`；`/runs` `apiItems=9 renderedRows=9 statusCount=9` |
+| 全量测试 | `npm test` | **0 ×3** | **63 files / 781 passed / 0 skipped / 0 failed**（281.30s / 278.12s / 276.68s，留档见 §6.1）；`27f83d1` 提交钩子内实测同口径 781 passed / 0 skipped（282.41s，`[pre-commit] 全部门禁通过`） |
+
+> **口径**：测试基数为 **781 passed / 0 skipped**（782 报数的更正与归因见 §6.1 末）；跳过 ≠ 通过，本里程碑读数无任何 skip。
 
 ### 6.4 未验证范围（如实列出，不写「应该没问题」）
 
@@ -542,4 +656,10 @@ LiteLLM 真容器与真实厂商两项同样不被 compare / baseline 任何路�
 | LiteLLM sidecar 未起真容器 | M2 §6.4 沿承 | **顺延 M4**（M4 SPEC 准入条件）；M3 不依赖（§1.8） |
 | 浏览器层 `EventSource` 未覆盖 | M2 §6.4 沿承 | **顺延 M4**（M4 SPEC 准入条件）；M3 不依赖、不改 SSE 路径（§1.8） |
 | `e2e-fail.ts` 未按原样运行 | M2 §6.4 沿承 | 随 §1.8 口径顺延 M4 |
-| 8 处可判定固定等待未替换 | `HANDOFF.md` §4.6 | **Batch 4 清理**（独立笔 `test(M3): 替换固定等待为条件等待` + 3 连跑全绿，§1.2）；完成后本行移除并留读数 |
+
+> **行移除说明（2026-11-17）**：「8 处可判定固定等待未替换」一行已按其自身规则移除——清理已于
+> `27f83d1` 完成（12 处 = HANDOFF §4.6 台账 8 处 + `pg04-drawer.spec.ts` 自身新增 4 处），
+> 3 连跑全绿读数留档见 §6.1。
+>
+> **合并说明义务（兑现前不得省略）**：M3 合并说明必须**原句**包含——
+> 「U-1 未验证，待 CI 确认」。严禁把 U-1 写成「已验证 / 已通过」。

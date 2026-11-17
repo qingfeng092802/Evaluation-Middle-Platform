@@ -29,10 +29,6 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // ---------------------------------------------------------------------------
 
 describe('placeholderNotice · 里程碑归属逐条对齐 SPEC', () => {
-  it('PG-08 报告对比属 M3', () => {
-    expect(placeholderNotice('pg08').milestone).toBe('M3');
-  });
-
   it('PG-07 算子库属 M4', () => {
     expect(placeholderNotice('pg07').milestone).toBe('M4');
   });
@@ -64,10 +60,6 @@ describe('PlaceholderPage · 渲染里程碑原文', () => {
     return renderToStaticMarkup(React.createElement(PlaceholderPage, { noticeKey: key }));
   }
 
-  it('PG-08 渲染出「M3」', () => {
-    expect(html('pg08')).toContain('M3');
-  });
-
   it('PG-07 渲染出「M4」', () => {
     expect(html('pg07')).toContain('M4');
   });
@@ -77,7 +69,7 @@ describe('PlaceholderPage · 渲染里程碑原文', () => {
   });
 
   it('渲染页面编号（PG-xx），便于对照需求文档', () => {
-    expect(html('pg08')).toContain('PG-08');
+    expect(html('pg07')).toContain('PG-07');
   });
 
   it('只用语义 Token 类名，不产出裸色值（check:tokens 的一致性）', () => {
@@ -94,7 +86,6 @@ describe('PlaceholderPage · 渲染里程碑原文', () => {
 // ---------------------------------------------------------------------------
 
 const ROUTES: readonly { file: readonly string[]; key: PlaceholderKey }[] = [
-  { file: ['app', 'runs', 'compare', 'page.tsx'], key: 'pg08' },
   { file: ['app', 'evaluators', 'page.tsx'], key: 'pg07' },
 ];
 
