@@ -22,8 +22,12 @@ const SHOT_DIR = process.env['PG08_SHOT_DIR'] ?? null;
 const LAUNCHER = await tryLocalChromium();
 
 /** 需要服务的浏览器用例：服务未起 → 显式跳过（跳过 ≠ 通过）。 */
-let SKIP_REASON: string | null =
-  LAUNCHER === null ? '浏览器不可用' : (await fetch(`${BASE}/api/runs?limit=1`)).ok === false ? `${BASE} 服务未起` : null;
+let SKIP_REASON: string | null = LAUNCHER === null ? '浏览器不可用' : null;
+try {
+  if (!(await fetch(`${BASE}/api/runs?limit=1`)).ok) SKIP_REASON = `${BASE} 服务未起`;
+} catch {
+  SKIP_REASON = `${BASE} 服务未起（连接失败）`;
+}
 
 interface RunItem {
   readonly id: string;

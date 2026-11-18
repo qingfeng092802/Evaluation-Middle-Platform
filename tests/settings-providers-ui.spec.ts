@@ -293,9 +293,10 @@ describe('导航 · /settings 已解除置灰', () => {
     expect(resolveActiveNav('/settings/providers')).toBe('/settings');
   });
 
-  it('/evaluators 仍是 P1 置灰（本批次不碰 PG-07）', () => {
+  it('/evaluators 已解除置灰（M4 Batch 4 交付 PG-07）', () => {
     const evaluators = NAV_SECTIONS.flatMap((s) => s.items).find((i) => i.href === '/evaluators');
-    expect(evaluators?.disabled).toBe(true);
+    expect(evaluators).toBeDefined();
+    expect(evaluators?.disabled).toBeUndefined();
   });
 
   it('分区个数仍是 4（不得因为加了页面就多一个分区）', () => {

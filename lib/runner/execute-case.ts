@@ -35,7 +35,7 @@ import type {
 } from '@eval-platform/contracts';
 import { composeCaseScore } from '@eval-platform/contracts';
 import type { CaseResultStatus } from '@eval-platform/contracts';
-import { chatComplete, type ChatSuccess } from '../gateway/index.js';
+import { chatComplete } from '../gateway/index.js';
 import { chatTargetFromEnv } from '../gateway/target.js';
 import { computeTargetCost, findSnapshotPrice, type PriceSnapshotEntry } from '../cost/index.js';
 import { bindOperator } from '../operators/shared.js';
@@ -52,18 +52,46 @@ export interface RunEvaluatorSpec {
   readonly passThreshold: number | null;
 }
 
+/** T1 目标执行配置（`resolveTargetExecution` 的 t1 分支，去 kind 后同形）。 */
+export interface T1CaseTarget {
+  readonly modelProviderId: string;
+  readonly modelId: string;
+  readonly promptTemplate: string;
+  readonly temperature: number;
+  readonly maxTokens: number;
+  readonly params: Record<string, unknown> | null;
+}
+
+/**
+ * 执行目标（M4 Batch 4 起是 union）：T1 平台内执行 / T2 外部 HTTP（US-021）。
+ *
+ * T2 的映射语义（落地口径，`product-overview.md` §4.1）：
+ *  - `requestMapping`：`{ "端点请求体JSON路径": "平台变量" }`——平台变量目前只有
+ *    `case.input`（`input.query` 为字符串时取之，否则取整个 input 的 JSON 串）；
+ *  - `responseMapping`：`{ "平台字段": "端点响应JSON路径" }`——平台字段白名单
+ *    `answer`（必需）/ `retrieval`（可选对象）/ `usage.tokensIn` / `usage.tokensOut` /
+ *    `usage.costTarget`（端点自报成本，平台不估算、不乘价）；
+ *  - 端点不回 usage ⇒ tokens/cost 记 0，unknown 语义由台账 `unknownCostCases` 暴露。
+ */
+export type ExecuteTarget =
+  | ({ kind: 't1_prompt' } & T1CaseTarget)
+  | {
+      readonly kind: 't2_http';
+      readonly endpointUrl: string;
+      readonly authHeaderValue: string | null;
+      readonly requestMapping: Record<string, string>;
+      readonly responseMapping: Record<string, string>;
+    };
+
 export interface ExecuteCaseInput {
   readonly runId: string;
   readonly case: DatasetCase;
-  readonly target: {
-    readonly modelProviderId: string;
-    readonly modelId: string;
-    readonly promptTemplate: string;
-    readonly temperature: number;
-    readonly maxTokens: number;
-    readonly params: Record<string, unknown> | null;
-  };
-  readonly provider: { readonly baseUrl: string; readonly apiKey: string };
+  readonly target: ExecuteTarget;
+  /**
+   * T1 专用：网关指向与 Bearer。T2 目标不经网关 ⇒ `null`
+   * （worker 侧 T1 已保证可用，T1 分支内对 null 防御性失败）。
+   */
+  readonly provider: { readonly baseUrl: string; readonly apiKey: string } | null;
   readonly evaluators: readonly RunEvaluatorSpec[];
   readonly priceSnapshot: readonly PriceSnapshotEntry[];
   /**
@@ -75,6 +103,20 @@ export interface ExecuteCaseInput {
    */
   readonly resolveJudgeChat: (config: JudgeEvaluatorConfig) => JudgeChat | null;
   readonly caseKeyFallback?: string | undefined;
+}
+
+/** 目标侧调用产物：T1（网关 chat）与 T2（外部 HTTP）归一后的形状。 */
+interface TargetOutcome {
+  readonly ok: boolean;
+  readonly status: CaseResultStatus;
+  readonly message: string | null;
+  readonly content: string | null;
+  readonly outputRaw: Record<string, unknown> | null;
+  readonly retrievalReturned: Record<string, unknown> | null;
+  readonly tokensIn: number;
+  readonly tokensOut: number;
+  readonly costTarget: number;
+  readonly latencyMs: number | null;
 }
 
 export interface ExecutedCase {
@@ -175,7 +217,7 @@ function computeJudgeCost(
 interface BaseShape {
   readonly caseKey: string;
   readonly datasetCaseId: string;
-  readonly retrievalReturned: null;
+  readonly retrievalReturned: Record<string, unknown> | null;
 }
 
 /**
@@ -187,8 +229,8 @@ interface BaseShape {
 function degraded(p: {
   base: BaseShape;
   status: CaseResultStatus;
-  message: string;
-  outcome: ChatSuccess | null;
+  message: string | null;
+  outcome: { readonly content: string | null } | null;
   latencyMs: number | null;
   tokensIn: number;
   tokensOut: number;
@@ -221,33 +263,27 @@ function degraded(p: {
  */
 export async function executeCase(input: ExecuteCaseInput): Promise<ExecutedCase> {
   const { case: datasetCase } = input;
-  const prompt = renderPrompt(input.target.promptTemplate, { case: datasetCase });
 
-  const outcome = await chatComplete({
-    // 「发给谁 / 带哪个 Bearer」由 target 决定：直连厂商，或经 LiteLLM sidecar。
-    // 关键点是两者必须同时切换——只换地址不换 Key 会在 sidecar 侧得到 401。
-    ...chatTargetFromEnv(input.provider),
-    model: input.target.modelId,
-    messages: [{ role: 'user', content: prompt }],
-    temperature: input.target.temperature,
-    maxTokens: input.target.maxTokens,
-    extraParams: input.target.params ?? undefined,
-  });
+  // ---- 目标侧调用（T1 网关 / T2 外部 HTTP），归一成 TargetOutcome ----
+  const target =
+    input.target.kind === 't2_http'
+      ? await callT2Endpoint(input.target, datasetCase)
+      : await callT1Target(input.target, input.provider, input.priceSnapshot, datasetCase);
 
   const base: BaseShape = {
     caseKey: datasetCase.caseKey,
     datasetCaseId: datasetCase.id,
-    retrievalReturned: null,
+    retrievalReturned: target.retrievalReturned,
   };
 
-  if (!outcome.ok) {
-    // 目标模型调用失败：score 必须为 null（C-3：非 OK ⇒ 无分），成本为 0（根本没有用量）
+  if (!target.ok) {
+    // 目标调用失败：score 必须为 null（C-3：非 OK ⇒ 无分），成本为 0（没有可计量用量）
     return degraded({
       base,
-      status: outcome.status,
-      message: outcome.message,
+      status: target.status,
+      message: target.message,
       outcome: null,
-      latencyMs: outcome.latencyMs,
+      latencyMs: target.latencyMs,
       tokensIn: 0,
       tokensOut: 0,
       costTarget: 0,
@@ -255,14 +291,9 @@ export async function executeCase(input: ExecuteCaseInput): Promise<ExecutedCase
     });
   }
 
-  const outputRaw = { content: outcome.content };
-  const ctx = buildContext(datasetCase, outcome.content, outputRaw);
-
-  const costTarget = computeTargetCost(
-    findSnapshotPrice(input.priceSnapshot, input.target.modelProviderId, input.target.modelId),
-    outcome.tokensIn,
-    outcome.tokensOut,
-  );
+  const outputRaw = { content: target.content };
+  const ctx = buildContext(datasetCase, target.content, outputRaw);
+  const costTarget = target.costTarget;
 
   // 按 order_index（= 数组顺序）串行跑算子
   const scores: OperatorScore[] = [];
@@ -280,10 +311,10 @@ export async function executeCase(input: ExecuteCaseInput): Promise<ExecutedCase
           base,
           status: 'FAILED',
           message: `裁判模型不可用（${judgeConfig.modelId}）：未找到启用的厂商或缺少 baseUrl`,
-          outcome,
-          latencyMs: outcome.latencyMs,
-          tokensIn: outcome.tokensIn,
-          tokensOut: outcome.tokensOut,
+          outcome: target,
+          latencyMs: target.latencyMs,
+          tokensIn: target.tokensIn,
+          tokensOut: target.tokensOut,
           costTarget,
           costJudge: 0,
         });
@@ -303,10 +334,10 @@ export async function executeCase(input: ExecuteCaseInput): Promise<ExecutedCase
           base,
           status: err.status,
           message: err.message,
-          outcome,
-          latencyMs: outcome.latencyMs,
-          tokensIn: outcome.tokensIn,
-          tokensOut: outcome.tokensOut,
+          outcome: target,
+          latencyMs: target.latencyMs,
+          tokensIn: target.tokensIn,
+          tokensOut: target.tokensOut,
           costTarget,
           // 失败前若已真的调过模型，这笔钱照样入账
           costJudge: computeJudgeCost(judgeConfig, input.priceSnapshot, used.tokensIn, used.tokensOut),
@@ -332,19 +363,231 @@ export async function executeCase(input: ExecuteCaseInput): Promise<ExecutedCase
     ...base,
     status: 'OK',
     errorMessage: null,
-    outputText: outcome.content,
+    outputText: target.content,
     outputRaw,
     score: composite.score,
     passed: composite.passed,
     operatorScores: scores,
     composite,
     judgeReasoning: reasons.length === 0 ? null : reasons.join('\n'),
-    latencyMs: outcome.latencyMs,
-    tokensIn: outcome.tokensIn,
-    tokensOut: outcome.tokensOut,
+    latencyMs: target.latencyMs,
+    tokensIn: target.tokensIn,
+    tokensOut: target.tokensOut,
     costTarget,
     costJudge: computeJudgeCost(judgeConfig, input.priceSnapshot, judgeTokensIn, judgeTokensOut),
   };
+}
+
+// ---------------------------------------------------------------------------
+// 目标侧调用（T1 网关 / T2 外部 HTTP）
+// ---------------------------------------------------------------------------
+
+/** T1：平台内网关调用（`chatComplete`），成本按快照单价 × token（TS-2 红线）。 */
+async function callT1Target(
+  target: T1CaseTarget,
+  provider: { readonly baseUrl: string; readonly apiKey: string } | null,
+  priceSnapshot: readonly PriceSnapshotEntry[],
+  datasetCase: DatasetCase,
+): Promise<TargetOutcome> {
+  if (!provider) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      message: 'T1 目标缺少可用厂商（worker 前置校验被绕过？）',
+      content: null,
+      outputRaw: null,
+      retrievalReturned: null,
+      tokensIn: 0,
+      tokensOut: 0,
+      costTarget: 0,
+      latencyMs: null,
+    };
+  }
+  const prompt = renderPrompt(target.promptTemplate, { case: datasetCase });
+  const outcome = await chatComplete({
+    // 「发给谁 / 带哪个 Bearer」由 target 决定：直连厂商，或经 LiteLLM sidecar。
+    // 关键点是两者必须同时切换——只换地址不换 Key 会在 sidecar 侧得到 401。
+    ...chatTargetFromEnv(provider),
+    model: target.modelId,
+    messages: [{ role: 'user', content: prompt }],
+    temperature: target.temperature,
+    maxTokens: target.maxTokens,
+    extraParams: target.params ?? undefined,
+  });
+  if (!outcome.ok) {
+    return {
+      ok: false,
+      status: outcome.status,
+      message: outcome.message,
+      content: null,
+      outputRaw: null,
+      retrievalReturned: null,
+      tokensIn: 0,
+      tokensOut: 0,
+      costTarget: 0,
+      latencyMs: outcome.latencyMs,
+    };
+  }
+  return {
+    ok: true,
+    status: 'OK',
+    message: null,
+    content: outcome.content,
+    outputRaw: { content: outcome.content },
+    retrievalReturned: null,
+    tokensIn: outcome.tokensIn,
+    tokensOut: outcome.tokensOut,
+    costTarget: computeTargetCost(
+      findSnapshotPrice(priceSnapshot, target.modelProviderId, target.modelId),
+      outcome.tokensIn,
+      outcome.tokensOut,
+    ),
+    latencyMs: outcome.latencyMs,
+  };
+}
+
+// ---- T2 映射原语（点路径 + 数字索引，如 `messages.0.content`）----
+
+function getPath(obj: unknown, path: string): unknown {
+  let cur: unknown = obj;
+  for (const seg of path.split('.')) {
+    if (cur === null || cur === undefined) return undefined;
+    if (Array.isArray(cur)) {
+      const idx = Number(seg);
+      cur = Number.isInteger(idx) ? cur[idx] : undefined;
+    } else if (typeof cur === 'object') {
+      cur = (cur as Record<string, unknown>)[seg];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
+function setPath(obj: Record<string, unknown>, path: string, value: unknown): void {
+  const segs = path.split('.');
+  let cur: Record<string, unknown> = obj;
+  for (let i = 0; i < segs.length - 1; i++) {
+    const seg = segs[i]!;
+    const next = cur[seg];
+    if (typeof next !== 'object' || next === null) {
+      cur[seg] = /^\d+$/.test(segs[i + 1] ?? '') ? [] : {};
+    }
+    cur = cur[seg] as Record<string, unknown>;
+  }
+  cur[segs[segs.length - 1]!] = value;
+}
+
+function numberOf(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v === 'string' && v !== '' && Number.isFinite(Number(v))) return Number(v);
+  return null;
+}
+
+/**
+ * 平台变量解析。目前只有 `case.input`：`input.query` 为字符串时取之
+ * （与导入侧 `{"query": …}` 形状对齐），否则整个 input 的 JSON 串。
+ */
+function resolveCaseVariable(name: string, c: DatasetCase): string {
+  if (name === 'case.input') {
+    if (typeof c.input === 'string') return c.input;
+    const q = (c.input as Record<string, unknown> | undefined)?.['query'];
+    if (typeof q === 'string') return q;
+    return JSON.stringify(c.input);
+  }
+  throw new Error(`未知的平台变量 "${name}"（目前只支持 case.input）`);
+}
+
+/** T2：外部 HTTP 调用（US-021）。任何失败都落成 TargetOutcome，不抛业务异常。 */
+async function callT2Endpoint(
+  t: { endpointUrl: string; authHeaderValue: string | null; requestMapping: Record<string, string>; responseMapping: Record<string, string> },
+  datasetCase: DatasetCase,
+): Promise<TargetOutcome> {
+  const started = Date.now();
+  const zero = {
+    content: null,
+    outputRaw: null,
+    retrievalReturned: null,
+    tokensIn: 0,
+    tokensOut: 0,
+    costTarget: 0,
+  };
+  try {
+    const payload: Record<string, unknown> = {};
+    for (const [path, variable] of Object.entries(t.requestMapping)) {
+      setPath(payload, path, resolveCaseVariable(variable, datasetCase));
+    }
+    const headers: Record<string, string> = { 'content-type': 'application/json' };
+    // 鉴权 Header 名固定 Authorization，值是配置时的完整值（如 `Bearer xxx`）；
+    // 明文只存在于这一次请求里，任何落库/响应/日志都不回显（US-021）。
+    if (t.authHeaderValue !== null) headers['authorization'] = t.authHeaderValue;
+
+    const res = await fetch(t.endpointUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const latencyMs = Date.now() - started;
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: 'FAILED',
+        message: `T2 端点返回 HTTP ${res.status}`,
+        ...zero,
+        latencyMs,
+      };
+    }
+
+    let json: unknown;
+    try {
+      json = await res.json();
+    } catch {
+      return { ok: false, status: 'PARSE_ERROR', message: 'T2 端点响应不是合法 JSON', ...zero, latencyMs };
+    }
+
+    const answerPath = t.responseMapping['answer'];
+    if (answerPath === undefined) {
+      return { ok: false, status: 'PARSE_ERROR', message: 'responseMapping 未映射 answer 字段', ...zero, latencyMs };
+    }
+    const answer = getPath(json, answerPath);
+    if (typeof answer !== 'string') {
+      return {
+        ok: false,
+        status: 'PARSE_ERROR',
+        message: `answer 路径 "${answerPath}" 在端点响应中缺失或非字符串`,
+        ...zero,
+        latencyMs,
+      };
+    }
+
+    const retrievalRaw = t.responseMapping['retrieval'] !== undefined ? getPath(json, t.responseMapping['retrieval']) : undefined;
+    return {
+      ok: true,
+      status: 'OK',
+      message: null,
+      content: answer,
+      outputRaw: { content: answer },
+      retrievalReturned:
+        retrievalRaw !== null && retrievalRaw !== undefined && typeof retrievalRaw === 'object'
+          ? (retrievalRaw as Record<string, unknown>)
+          : null,
+      // 端点不回 usage ⇒ 0（unknown 语义由台账 unknownCostCases 暴露，不估算）
+      tokensIn: numberOf(getPath(json, t.responseMapping['usage.tokensIn'] ?? '')) ?? 0,
+      tokensOut: numberOf(getPath(json, t.responseMapping['usage.tokensOut'] ?? '')) ?? 0,
+      // 成本由端点自报（product-overview §4.1）：平台不估算、不乘价
+      costTarget: numberOf(getPath(json, t.responseMapping['usage.costTarget'] ?? '')) ?? 0,
+      latencyMs,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      status: 'FAILED',
+      message: `T2 端点调用失败：${(err as Error).message}`,
+      ...zero,
+      latencyMs: Date.now() - started,
+    };
+  }
 }
 
 /** 供 worker 用：把 `NormalizedCase` 之外的依赖整理成一组参数。 */

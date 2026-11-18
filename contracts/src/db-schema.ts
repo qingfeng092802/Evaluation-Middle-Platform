@@ -36,6 +36,8 @@ export const TABLE_NAMES = [
   'case_human_labels',
   // M2-1（0019）：网关调用幂等账本
   'gateway_idempotency',
+  // M4（0020）：CI 回调 Token（US-018 拉取鉴权；仅存 SHA-256 哈希，明文不落库）
+  'callback_tokens',
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];
 
@@ -85,6 +87,11 @@ export const CROSS_CUTTING_MIGRATIONS = [
     no: 19,
     file: '0019_claim_epoch.sql',
     purpose: 'fencing token (claim_epoch) / gateway idempotency ledger',
+  },
+  {
+    no: 20,
+    file: '0020_callback_tokens.sql',
+    purpose: 'CI callback token (US-018 pull auth; hash-only storage)',
   },
 ] as const;
 
@@ -162,6 +169,8 @@ export const TRIGGER_NAMES = [
   // M2-1（0019）：幂等账本不可删；用量只允许「占位 → 回填」一次
   'trg_gateway_idempotency_no_delete',
   'trg_gateway_idempotency_usage_once',
+  // M4（0020）：CI 回调 Token 只存哈希、写入后不可变（重置 = 新签发）
+  'trg_callback_tokens_immutable',
 ] as const;
 export type TriggerName = (typeof TRIGGER_NAMES)[number];
 

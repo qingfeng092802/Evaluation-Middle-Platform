@@ -3,6 +3,7 @@
 import * as React from 'react';
 import {
   Activity,
+  Coins,
   Database,
   ListChecks,
   Play,
@@ -21,6 +22,7 @@ const NAV_ICONS: Readonly<Record<NavIconName, LucideIcon>> = {
   Target,
   ListChecks,
   Settings,
+  Coins,
 };
 
 interface SidebarProps {

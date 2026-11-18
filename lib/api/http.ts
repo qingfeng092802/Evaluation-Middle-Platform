@@ -54,6 +54,17 @@ export class ForbiddenError extends Error {
   }
 }
 
+/** 拉取鉴权失败（401）。M4 Batch 3：results 拉取需 `X-Callback-Token`（Q1=C 裁定）。 */
+export class UnauthorizedError extends Error {
+  constructor(
+    message: string,
+    readonly details?: Record<string, unknown>,
+  ) {
+    super(message);
+    this.name = 'UnauthorizedError';
+  }
+}
+
 interface ErrorBody {
   error: {
     code: ErrorCode;
@@ -106,6 +117,10 @@ export function toErrorResponse(err: unknown): NextResponse<ErrorBody> {
 
   if (err instanceof ForbiddenError) {
     return NextResponse.json(envelope('FORBIDDEN', err.message, id, err.details), { status: 403 });
+  }
+
+  if (err instanceof UnauthorizedError) {
+    return NextResponse.json(envelope('UNAUTHORIZED', err.message, id, err.details), { status: 401 });
   }
 
   if (err instanceof BlockedError) {

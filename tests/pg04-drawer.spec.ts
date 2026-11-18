@@ -19,8 +19,12 @@ import { EDGE_PATH, tryLocalChromium, waitUntil, type PwPage } from '../scripts/
 const BASE = process.env['PG_BASE'] ?? 'http://127.0.0.1:3000';
 const LAUNCHER = await tryLocalChromium();
 
-let SKIP_REASON: string | null =
-  LAUNCHER === null ? '浏览器不可用' : (await fetch(`${BASE}/api/runs?limit=1`)).ok === false ? `${BASE} 服务未起` : null;
+let SKIP_REASON: string | null = LAUNCHER === null ? '浏览器不可用' : null;
+try {
+  if (!(await fetch(`${BASE}/api/runs?limit=1`)).ok) SKIP_REASON = `${BASE} 服务未起`;
+} catch {
+  SKIP_REASON = `${BASE} 服务未起（连接失败）`;
+}
 
 interface RunItem {
   readonly id: string;

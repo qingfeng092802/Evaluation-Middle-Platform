@@ -14,7 +14,8 @@ export type NavIconName =
   | 'Database'
   | 'Target'
   | 'ListChecks'
-  | 'Settings';
+  | 'Settings'
+  | 'Coins';
 
 export interface NavItemSpec {
   readonly label: string;
@@ -53,11 +54,14 @@ export const NAV_SECTIONS: readonly NavSectionSpec[] = [
   },
   {
     title: '算子',
-    items: [{ label: '算子库', href: '/evaluators', icon: 'ListChecks', disabled: true, badge: 'P1' }],
+    items: [{ label: '算子库', href: '/evaluators', icon: 'ListChecks' }],
   },
   {
     title: '管理',
-    items: [{ label: '管理配置', href: '/settings', icon: 'Settings' }],
+    items: [
+      { label: '管理配置', href: '/settings', icon: 'Settings' },
+      { label: '成本台账', href: '/ledger', icon: 'Coins' },
+    ],
   },
 ];
 

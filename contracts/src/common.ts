@@ -145,6 +145,8 @@ export const ErrorCode = z.enum([
   'IMMUTABLE_VIOLATION',
   /** 鉴权失败（403）。M3 Batch 1：decision 仅 ROLE-B，非 B 即此码（openapi /api/baselines/{id}/decision 403）。 */
   'FORBIDDEN',
+  /** 拉取鉴权失败（401）。M4 Batch 3：results 拉取需 X-Callback-Token，缺失/无效即此码（openapi /api/gates/results/{runId} 401）。 */
+  'UNAUTHORIZED',
   'ILLEGAL_STATE_TRANSITION',
   'BLOCKED_NO_PROVIDER_CREDENTIALS',
   'BLOCKED_NO_EVALUATORS',

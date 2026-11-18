@@ -74,6 +74,7 @@ function caseOf(): DatasetCase {
 }
 
 const TARGET = {
+  kind: 't1_prompt' as const,
   modelProviderId: '33333333-3333-4333-8333-333333333333',
   modelId: 'deepseek-chat',
   promptTemplate: '请回答：{{query}}',

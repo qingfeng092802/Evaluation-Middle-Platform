@@ -11,6 +11,7 @@
 import type { Target, TargetVersion } from '@eval-platform/contracts';
 import type { PoolClient } from 'pg';
 import { canonicalJson } from '../canonical.js';
+import { decryptProviderKey, encryptProviderKey } from '../provider-key-cipher.js';
 import { iso, num, query, queryOne, withTransaction } from './_client.js';
 
 interface TargetRow {
@@ -184,6 +185,73 @@ export async function getT1ExecutionConfig(versionId: string): Promise<{
   };
 }
 
+// ---------------------------------------------------------------------------
+// T2 执行配置（M4 Batch 4，US-021）
+// ---------------------------------------------------------------------------
+
+export interface T2ExecutionConfig {
+  kind: 't2_http';
+  id: string;
+  targetId: string;
+  endpointUrl: string;
+  /** 已解密；未配置 ⇒ null（请求不带 Authorization）。 */
+  authHeaderValue: string | null;
+  requestMapping: Record<string, string>;
+  responseMapping: Record<string, string>;
+}
+
+export interface T1ExecutionConfig {
+  kind: 't1_prompt';
+  id: string;
+  targetId: string;
+  modelProviderId: string;
+  modelId: string;
+  promptTemplate: string;
+  temperature: number;
+  maxTokens: number;
+  params: Record<string, unknown> | null;
+}
+
+/**
+ * 按目标版本解析**执行配置**（worker 与 create-run 共用入口）。
+ *
+ * T2 的 `authHeaderValue` 在此**解密**：`target_versions` 行不可变（reject_mutation），
+ * 执行期回读密文列不破坏 R-11 的可复现性意图——且密文列是唯一住所，
+ * `config_snapshot`（会经 run detail API 泄出）绝不收它。
+ */
+export async function resolveTargetExecution(
+  versionId: string,
+): Promise<T1ExecutionConfig | T2ExecutionConfig | null> {
+  const row = await queryOne<TargetVersionRow>(`SELECT ${TV_COLUMNS} FROM target_versions WHERE id = $1`, [versionId]);
+  if (!row) return null;
+
+  if (row.kind === 't1_prompt') {
+    if (!row.model_provider_id || !row.model_id || !row.prompt_template) return null;
+    return {
+      kind: 't1_prompt',
+      id: row.id,
+      targetId: row.target_id,
+      modelProviderId: row.model_provider_id,
+      modelId: row.model_id,
+      promptTemplate: row.prompt_template,
+      temperature: num(row.temperature),
+      maxTokens: row.max_tokens as number,
+      params: (row.params as Record<string, unknown> | null) ?? null,
+    };
+  }
+
+  if (!row.endpoint_url || row.request_mapping === null || row.response_mapping === null) return null;
+  return {
+    kind: 't2_http',
+    id: row.id,
+    targetId: row.target_id,
+    endpointUrl: row.endpoint_url,
+    authHeaderValue: row.auth_header_ciphertext ? decryptProviderKey(row.auth_header_ciphertext) : null,
+    requestMapping: (row.request_mapping ?? {}) as Record<string, string>,
+    responseMapping: (row.response_mapping ?? {}) as Record<string, string>,
+  };
+}
+
 type WritableConfig =
   | {
       kind: 't1_prompt';
@@ -239,8 +307,8 @@ async function insertVersion(
       targetId,
       versionNo,
       cfg.endpointUrl,
-      // 只写不读：存密文列（M1 未启用 T2，实际不会走到这里）
-      cfg.authHeader ?? null,
+      // US-021：authHeader 只写不读——列名即契约，明文必须先加密再落库
+      cfg.authHeader === undefined ? null : encryptProviderKey(cfg.authHeader),
       JSON.stringify(cfg.requestMapping),
       JSON.stringify(cfg.responseMapping),
       createdBy,
@@ -309,7 +377,15 @@ export async function updateTarget(p: {
 
       if (changed) {
         const nextNo = targetRow.current_version_no + 1;
-        await insertVersion(client, p.id, nextNo, p.config, p.updatedBy);
+        // T2 继承语义（同 providers「省略 apiKey ⇒ 原 Key 保留」先例）：
+        // PATCH 省略 authHeader ⇒ 沿用上一版本的密文（解密回明文走统一的加密入列路径）；
+        // 显式给值 ⇒ 覆盖重加密。版本比较（toComparable）不含 authHeader，
+        // 因此「只换 header」不会推版本——想轮换密钥请连同其它字段一起改。
+        const cfg: WritableConfig =
+          p.config.kind === 't2_http' && p.config.authHeader === undefined && latestRow?.auth_header_ciphertext
+            ? { ...p.config, authHeader: decryptProviderKey(latestRow.auth_header_ciphertext) }
+            : p.config;
+        await insertVersion(client, p.id, nextNo, cfg, p.updatedBy);
         await client.query(
           `UPDATE targets SET kind = $2, current_version_no = $3, updated_at = now() WHERE id = $1`,
           [p.id, p.config.kind, nextNo],
