@@ -28,7 +28,7 @@ let page: PwPage;
 
 beforeAll(async () => {
   if (SKIP_REASON !== null || LAUNCHER === null) return;
-  const browser = await LAUNCHER.launch({ headless: true, executablePath: EDGE_PATH });
+  const browser = await LAUNCHER.launch({ executablePath: EDGE_PATH });
   page = await browser.newPage({ viewport: { width: 1366, height: 900 } });
   await page.goto(`${BASE}/settings`, { waitUntil: 'networkidle' });
 });

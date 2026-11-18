@@ -119,10 +119,7 @@ describe('出站派发留痕（0021）', () => {
   it('SUCCESS 与 FAILED 都落行；HTTP 500 显式记 FAILED 并带状态码原因', async () => {
     const hits: string[] = [];
     const server = http.createServer((req2, res2) => {
-      let raw = '';
-      req2.on('data', (c: Buffer) => {
-        raw += c;
-      });
+      req2.resume(); // 消费请求体；本用例只关心 URL 与响应码，不校验载荷
       req2.on('end', () => {
         hits.push(req2.url ?? '');
         if (req2.url === '/ok') {
@@ -230,7 +227,7 @@ describe('出站派发留痕（0021）', () => {
       retryCount: 0,
       errorMessage: expect.any(String),
     });
-    expect(body.items[0].payload).toBeTruthy();
+    expect(body.items[0]!.payload).toBeTruthy();
 
     const missing = await logsRoute.GET(
       req('/api/gates/00000000-0000-4000-8000-000000000000/dispatch-logs'),
