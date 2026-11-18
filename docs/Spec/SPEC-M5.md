@@ -1,8 +1,10 @@
 # SPEC-M5 · 推入模式（原生 GitHub Webhook）立项草案与安全模型推演
 
-> **状态**：**草案 v0.1 —— Q0–Q6 全部待需求方裁定**；裁定前不进任何 Batch 的契约扩展与编码
-> （本 SPEC 遵守 Phase 3 纪律：**零业务代码、零路由/服务新增**；契约与 DDL 均为草案，裁定后
-> 以 `contracts(M5)` 单独成笔入库）。
+> **状态**：**v0.2 —— Q0–Q6 七项已于 2026-11-19 全部裁定回填**（见 §1 各条「裁定」行与 §附录 A）。
+> Q0 的两处事实文件修订（`工程规则.md` §9 / `pages-and-flows.md` PG-09 边界句）**条文已定稿、
+> 随第一笔 `contracts(M5)` 入库，不提前提交**（需求方指令）。**Batch 1 未启动**——需求方放行后才
+> 动契约与代码。此前 v0.1 为纯草案（Phase 3 纪律：零业务代码、零路由/服务新增；契约与 DDL 均为
+> 草案，裁定后以 `contracts(M5)` 单独成笔入库）。
 > **上位事实源**：`docs/Spec/milestones.md`（止于 M4——增补义务见 §5）、`docs/facts/user-stories.md`
 > `US-018`（GitHub PR 部分 M4 时顺延，本 SPEC 即其激活提案）、`docs/facts/pages-and-flows.md`
 > PG-09 GitHub 边界句、`docs/工程规则.md` §9（**本 SPEC 记录对其中一条红线的推翻裁定，见 Q0**）、
@@ -20,16 +22,16 @@
 | # | 检查项 | 判定方法 | 状态 |
 |---|---|---|---|
 | 1 | M4 已合并入 `main` 并打 `v0.1.0-m4` | `git tag -l` 含 `v0.1.0-m4`；origin 三个里程碑 tag 齐 | ✅ 已核实（2026-11-19，merge `a74c789`） |
-| 2 | **`工程规则.md` §9 红线修订入库**（「不在项目中配置 GitHub PAT」→「GitHub 凭证受控持有」，修订条文见 §1-Q0 附） | 读 §9 原文 | 🔴 待裁定后执行——**治理文件由需求方拍板，本 SPEC 不代改** |
-| 3 | `pages-and-flows.md` PG-09 GitHub 边界句同步修订 | 读 PG-09 边界段 | 🔴 同上（条文见 §1-Q0 附） |
-| 4 | 本 SPEC §1 待确认（Q1–Q6）全部裁定 | 见 §1 | ⬜ 待需求方裁定 |
-| 5 | `milestones.md` 增补 M5 行 + 故事归属提案（US-022 webhook 集成 / US-023 结果回传，见 §5） | 读 milestones | ⬜ 待裁定后执行 |
+| 2 | **`工程规则.md` §9 红线修订入库**（「不在项目中配置 GitHub PAT」→「GitHub 凭证受控持有」，修订条文见 §1-Q0 附） | 读 §9 原文 | 🟡 **已批准（Q0，2026-11-19）、条文定稿——随第一笔 `contracts(M5)` 入库，不提前提交** |
+| 3 | `pages-and-flows.md` PG-09 GitHub 边界句同步修订 | 读 PG-09 边界段 | 🟡 同行 2：已批准、条文定稿，随 `contracts(M5)` 入库 |
+| 4 | 本 SPEC §1 待确认（Q1–Q6）全部裁定 | 见 §1 | ✅ **已裁定（2026-11-19，回填见 §附录 A）** |
+| 5 | `milestones.md` 增补 M5 行 + 故事归属提案（US-022 webhook 集成 / US-023 结果回传，见 §5） | 读 milestones | ⬜ 待执行（随 `contracts(M5)` 或 Batch 1 入库） |
 | 6 | 拉取模式契约边界已实测成立（推入模式的回传与判定语义复用它） | `scripts/ci-pull-simulator.ts` 实跑 | ✅ 11 项断言 0 失败（`572f36a`，2026-11-19） |
 | 7 | 「门禁规则整体计算」行为已实测留档（Q6 的背景事实） | simulator 用例 A/B 复现：阻断线启用 ⇒ 该集全部 run FAIL | ✅ 已留档（`572f36a` 提交信息 + 本 SPEC §1-Q6） |
 
 ---
 
-## 1. 红线推翻与前置裁定（Q0–Q6，全部待需求方裁定，本文件不代拍）
+## 1. 红线推翻与前置裁定（Q0–Q6，**2026-11-19 已全部裁定**，回填见各条「裁定」行与 §附录 A）
 
 > 裁定原则（承 SPEC-M4 §1）：凡与事实源冲突的预期，**先指出冲突、给出选项与建议、停下等裁定**
 > ——不静默改架构，也不静默缩范围。
@@ -57,7 +59,8 @@
 **裁定效果**：仅解除「持有 GitHub 凭证」禁令；「凭证不入文档/提交信息/日志」「只写不读」等纪律
 **原样生效**且 M5 全程受其约束。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**批准**。按本节拟议条文执行两处修订；实际文件修订**随第一笔
+`contracts(M5)` 入库，不提前提交**——红线解除的生效时点与契约落地绑定。
 
 ### Q1 · 鉴权方案：A（GitHub App，**推荐**）vs B（PAT 个人令牌）
 
@@ -78,7 +81,9 @@
 `PROVIDER_KEY_SECRET` 现读、口令缺失即抛错不降级明文）；传输仅两个出口——GitHub JWT/Token 端点
 与 REST API 调用；泄露控制详见 §附录 C。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**方案 A（GitHub App）**。理由：权限最小化
+（`pull_requests:read` + `commit_statuses:write`）、Token 短周期自愈（1h 过期）、失效半径可控。
+B（PAT）作为 GHES 降级备选：**落库列与互斥 CHECK 保留**，**M5 只实现 A**。
 
 ### Q2 · 支持面：M5 死磕 GitHub，还是同时做 GitLab / 飞书触发？
 
@@ -88,7 +93,9 @@
 语义塞进一个枚举——若 Q5 裁定评论回传复用 `outbound_dispatch_logs`，其 `channel_kind` 增补
 `'github'` 属 `contracts(M5)` 契约笔事项，单独评审）。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**只做 GitHub**。飞书 / 企微已有 M4 出站、GitLab 无现状需求；
+`github_integrations.kind` CHECK 锁死 `'github_app'`；`GateChannel` 枚举不动；GitHub 回传走
+独立集成表（不塞进 GateChannel 语义里）——分层正确，照此执行。
 
 ### Q3 · Synchronize（PR 更新）时是否中断上一次跑批（Cancel in Progress）？
 
@@ -104,7 +111,10 @@
 - **简化备选（若裁定不中断）**：旧 run 跑完，但只回传最新 head_sha 的 Status；旧 sha 留旧状态。
   需在文档写明「陈旧结论仍在跑」的产品语义。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**中断（Cancel in Progress）**。不中断会把 worker 队列堆满
+陈旧 run，且旧 sha 的迟到 Status 会覆盖语义。按 §1 实现草案执行：0023 迁移加
+`cancel_requested boolean NOT NULL DEFAULT false`；扩展 `trg_eval_runs_guard` 允许
+`RUNNING → CANCELLED`；worker 在每 Case 边界检查协作式终止。
 
 ### Q4 · 私有仓库的代码克隆凭证
 
@@ -112,9 +122,10 @@
 路径映射（若采用按文件路径 glob 触发，见 §2.3）通过 GitHub API **只读**列举变更文件：
 方案 A 由 Installation Token 天然覆盖（App 权限 `pull_requests:read` 含 files）；方案 B 需 PAT 带
 repo 读权限。**因此本 SPEC 不引入任何 git clone / 凭证配置面**；若未来出现「按代码内容评测」的
-需求，另开 SPEC。待裁定确认。
+需求，另开 SPEC（Q4 已裁定：本版不含任何代码克隆路径）。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**永不克隆**。评测对象是 HTTP Target，不是代码；路径映射经
+GitHub API 只读 files 列表实现，无需任何 clone 凭证。此边界写入 §3「明确不做」。
 
 ### Q5 · 回传形态：只打红/绿 Commit Status，还是详细 Markdown 评论？
 
@@ -126,7 +137,10 @@ Branch Protection 消费它），Batch 3 必交付。
 （指标表 / 逐规则明细 / 失败原因 / 无基线 fail-closed 提示），同一 Batch 或顺延半批。
 若裁定只打 Status：评论顺延 M6，`pull_requests:write` 权限不申请（最小化）。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**两者都要，分两批**。Commit Status（`commit_statuses:write`）
+Batch 3 必交付；Markdown 评论（`pull_requests:write`）顺延半批——放 Batch 3 尾部或并入 Batch 4。
+权限清单按此收敛；`outbound_dispatch_logs.channel_kind` 增 `'github'` 属 `contracts(M5)`
+契约笔事项。
 
 ### Q6 · 「门禁规则整体计算」约束——是否引入「按 PR 触发只评估特定规则子集」？
 
@@ -142,7 +156,10 @@ Branch Protection 消费它），Batch 3 必交付。
   `regression_gates` 表结构 + 求值语义 + `gate_evaluations` 留痕口径（milestones §5.3「门禁结果
   不可变」需重新表述），实现代价中等，且与「整体计算可申诉」的既有设计互斥。
 
-**裁定**：＿＿＿＿（待需求方）
+**裁定（2026-11-19，需求方）**：**备选先行（不改求值内核）**。M5 **不改** `evaluateRunGates`
+的整体计算语义；以「PR 触发绑定专用冒烟评测集」（独立数据集）天然隔离，与发布门禁主集分开；
+文档写明「同一数据集的规则全集对该集全部 run 生效」是产品行为。「适用通道」字段方案留作未来
+专项，不在 M5 范围。
 
 ---
 
@@ -241,8 +258,8 @@ CREATE TABLE pr_trigger_rules (
 ```
 
 **匹配优先级**：label > path_globs > target_branch；多条规则命中 → **各自触发一个 run**（每评测集
-一个，互不串扰）；零命中 → `SKIPPED_UNBOUND` 留痕不建 run。**Q6 若裁定不改求值语义，则本表
-绑定的是「PR 专用评测集」**（冒烟集），与发布门禁主集天然隔离。
+一个，互不串扰）；零命中 → `SKIPPED_UNBOUND` 留痕不建 run。**Q6 已裁定备选先行**：本表绑定的
+是「PR 专用评测集」（冒烟集），与发布门禁主集天然隔离——不改门禁求值内核。
 
 ### 2.4 契约扩展草案（zod / openapi 摘要——**裁定后 `contracts(M5)` 笔入库**）
 
@@ -270,10 +287,12 @@ CREATE TABLE pr_trigger_rules (
 | T-7 | 陈旧结论覆盖 | synchronize 取消语义（随 Q3）；Status 绑定 sha 不可互相覆盖 | §4-3 |
 | T-8 | GitHub 端权限过大 | 方案 A 权限最小化 + Installation Token 1h 过期（Q1 推荐主因） | 复核会话 |
 
-### 2.6 触发与取消（依赖 Q3 裁定）
+### 2.6 触发与取消（Q3 已裁定中断）
 
-见 §1-Q3 实现草案。**明确不做**：不实现「删除既有 Status」（GitHub 无此 API）；不实现跨仓库
-评测结果聚合。
+见 §1-Q3 实现草案（0023 `cancel_requested` + guard 扩展 + worker Case 边界协作式检查）。
+**明确不做**：不实现「删除既有 Status」（GitHub 无此 API）；不实现跨仓库评测结果聚合；
+**不实现任何形式的用户代码克隆**（Q4 已裁定：评测对象是 HTTP Target，路径映射走 GitHub API
+只读 files 列表）。
 
 ---
 
@@ -284,14 +303,15 @@ CREATE TABLE pr_trigger_rules (
 
 | Batch | 类型 | 原子任务 | 准出要点 |
 |---|---|---|---|
-| Batch 1 | [BE] 契约笔 | `contracts(M5):` 0022/0023 迁移（github_integrations / webhook_deliveries / pr_trigger_rules / cancel_requested 随 Q3）+ 注册表与事实文档 + zod（webhook 白名单、集成配置掩码形状、出站声明）+ openapi（webhook 入站 + 集成 CRUD） | 双镜像 cmp；T-10 精算；泄密扫描用例先红后绿 |
-| Batch 2 | [BE] | HMAC 校验（timingSafeEqual）→ delivery 幂等 → 事件白名单解析 → PR 映射 → 建 run（`trigger_source='CI_WEBHOOK'`）+ 取消通道（随 Q3） | §4-1/2/5/6/7 全绿；本地假 GitHub 服务器范式（callback-token.spec 同款） |
-| Batch 3 | [BE] | 终态回传出站：Installation Token 换取与缓存 + Commit Status 写入；Markdown 评论（随 Q5）；失败落 0021 留痕（channel_kind 增 'github' 随 Q5） | Status payload 断言；token 缓存命中断言；401/422 处理 |
+| Batch 1 | [BE] 契约笔 | `contracts(M5):` 0022/0023 迁移（github_integrations / webhook_deliveries / pr_trigger_rules / cancel_requested——Q3 已裁定）+ 注册表与事实文档 + **随笔入库：§9 与 PG-09 修订（Q0）** + zod（webhook 白名单、集成配置掩码形状、出站声明）+ openapi（webhook 入站 + 集成 CRUD） | 双镜像 cmp；T-10 精算；泄密扫描用例先红后绿 |
+| Batch 2 | [BE] | HMAC 校验（timingSafeEqual）→ delivery 幂等 → 事件白名单解析 → PR 映射 → 建 run（`trigger_source='CI_WEBHOOK'`）+ 取消通道（Q3 已裁定中断） | §4-1/2/5/6/7 全绿；本地假 GitHub 服务器范式（callback-token.spec 同款） |
+| Batch 3 | [BE] | 终态回传出站：Installation Token 换取与缓存 + Commit Status 写入（**必交付**）；Markdown 评论**顺延半批**（Batch 3 尾或并入 Batch 4，Q5）；失败落 0021 留痕（channel_kind 增 'github'，contracts(M5) 笔） | Status payload 断言；token 缓存命中断言；401/422 处理 |
 | Batch 4 | [FE] | PG-09 新「GitHub 集成」Tab：集成 CRUD（凭据只写不读）、仓库绑定、触发规则映射表、delivery 历史；role 语义照 2026-11-18 裁定（A 只读 / B 可操作） | 掩码/布尔位断言；静态 + 浏览器档（settings-tabs.spec 范式） |
 | Batch 5 | [INT] | 真实仓库 PR 全链路联调（test 仓库发 PR → Status 落地）+ 安全审计（密钥扫描、`WRITE_ONLY_FIELDS` 对照）+ 独立复核（全新上下文会话） | 复核 ACCEPT → `v0.2.0-m5`（打 tag 需授权） |
 
-**明确不做（M5）**：GitLab / 其他平台触发（Q2）；代码克隆与内容评测（Q4）；跨仓库结果聚合；
-删除既有 Status；Badcase 回流（US-012 永不做）；多租户。
+**明确不做（M5）**：GitLab / 其他平台触发（Q2 已裁定只做 GitHub）；**用户代码克隆与内容评测**
+（Q4 已裁定：永不克隆）；跨仓库结果聚合；删除既有 Status；Badcase 回流（US-012 永不做）；
+多租户；门禁求值语义改造（Q6 已裁定备选先行，「适用通道」留未来专项）。
 
 ---
 
@@ -303,7 +323,7 @@ CREATE TABLE pr_trigger_rules (
 2. **重放被拒（幂等）**：Given 同一合法 `opened` 事件已被处理（`X-GitHub-Delivery` 已落账且
    触发过 run）；When 原样重放（同 signature 同 delivery_id）；Then 响应 200 且含 `deduped:true`，
    **不新建**第二个 run，原 run 状态不受影响。
-3. **Synchronize 取消旧跑批**（随 Q3=中断裁定）：Given PR #7 在 head_sha₁ 的 run 处于 `RUNNING`；
+3. **Synchronize 取消旧跑批**（Q3 已裁定中断）：Given PR #7 在 head_sha₁ 的 run 处于 `RUNNING`；
    When 收到同 PR head_sha₂ 的 `synchronize` 事件；Then sha₁ run 协作式置 `CANCELLED`、sha₂ 新
    run 建立，且 sha₁ 的 Commit Status 终值按 Q5 口径落定（不出现 sha₂ 结论写在 sha₁ 上的错位）。
 4. **私钥不以明文出现在任何 API 响应**：Given 集成已保存 PEM 与 webhook_secret；When 请求
@@ -324,12 +344,12 @@ CREATE TABLE pr_trigger_rules (
 
 | 项 | 原文 / 现状 | M5 变更 | 状态 |
 |---|---|---|---|
-| `工程规则.md` §9 | 「不在项目中配置 GitHub PAT」 | 推翻为「受控持有（App/PAT 密文）」，其余条款不变；修订条文见 §1-Q0 | 🔴 待裁定后修订入库（Q0，治理文件不代改） |
-| `pages-and-flows.md` PG-09 边界句 | 「永不持有、永不输入任何 GitHub PAT；本 Tab 不出现任何 GitHub 凭据输入框」 | 改为「凭据由平台加密持有；本 Tab 不出现凭据明文与回显」 | 🔴 待裁定后修订入库（Q0 附） |
+| `工程规则.md` §9 | 「不在项目中配置 GitHub PAT」 | 推翻为「受控持有（App/PAT 密文）」，其余条款不变；修订条文见 §1-Q0 | 🟡 **已批准（Q0，2026-11-19）**——随第一笔 `contracts(M5)` 入库 |
+| `pages-and-flows.md` PG-09 边界句 | 「永不持有、永不输入任何 GitHub PAT；本 Tab 不出现任何 GitHub 凭据输入框」 | 改为「凭据由平台加密持有；本 Tab 不出现凭据明文与回显」 | 🟡 同上（Q0 批准，随 `contracts(M5)` 入库） |
 | `SPEC-M4.md` §1.10-Q1 | 推入模式顺延 M5 | 本 SPEC 即其兑现 | ✅ 兑现 |
-| `milestones.md` | 止于 M4；`US-018` GitHub 部分顺延 | 需增补 M5 行 + `US-022`（webhook 集成）/ `US-023`（结果回传）提案，故事归属待拍 | ⬜ 待裁定后执行 |
-| `GateChannel` 枚举 | feishu / wecom / webhook | **不动**（GitHub 回传走独立集成）；`outbound_dispatch_logs.channel_kind` 增 `'github'` 属 `contracts(M5)` 事项（随 Q5） | ⬜ |
-| 「门禁规则整体计算」 | 实测产品行为（simulator 留档） | Q6：备选先行（专用数据集隔离），不改求值内核 | ⬜ 待裁定 |
+| `milestones.md` | 止于 M4；`US-018` GitHub 部分顺延 | 需增补 M5 行 + `US-022`（webhook 集成）/ `US-023`（结果回传）提案，故事归属待拍 | ⬜ 待执行（随 `contracts(M5)` 或 Batch 1 入库） |
+| `GateChannel` 枚举 | feishu / wecom / webhook | **不动**（GitHub 回传走独立集成）；`outbound_dispatch_logs.channel_kind` 增 `'github'` 属 `contracts(M5)` 事项 | ⬜ contracts(M5) 笔 |
+| 「门禁规则整体计算」 | 实测产品行为（simulator 留档） | Q6 已裁定备选先行：专用数据集隔离，不改求值内核；文档写明整体计算为产品行为 | ✅ 已裁定（2026-11-19） |
 
 ---
 
@@ -351,14 +371,14 @@ CREATE TABLE pr_trigger_rules (
 
 ---
 
-## 附录 A · 裁定回填汇总表（裁定后由需求方指令回填，v0.2 起生效）
+## 附录 A · 裁定回填汇总表（v0.2 · 2026-11-19 需求方七项裁定）
 
 | # | 议题 | 裁定 | 日期 |
 |---|---|---|---|
-| Q0 | 红线推翻（§9 + PG-09 修订入库） | 待裁定 | — |
-| Q1 | 鉴权方案（A App / B PAT） | 待裁定 | — |
-| Q2 | 支持面（只做 GitHub？） | 待裁定 | — |
-| Q3 | Synchronize 中断（Cancel in Progress） | 待裁定 | — |
-| Q4 | 私有仓库克隆凭证（建议：永不克隆） | 待裁定 | — |
-| Q5 | 回传形态（Status / Status+评论） | 待裁定 | — |
-| Q6 | 门禁规则子集（备选先行 vs 改求值语义） | 待裁定 | — |
+| Q0 | 红线推翻（§9 + PG-09 修订入库） | **批准**——按 §1-Q0 拟议条文执行；两处事实/治理文件修订**随第一笔 `contracts(M5)` 入库，不提前提交** | 2026-11-19 |
+| Q1 | 鉴权方案（A App / B PAT） | **方案 A（GitHub App）**——权限最小化、Token 1h 自愈、失效半径可控；B 作 GHES 降级备选（互斥 CHECK 保留），M5 只实现 A | 2026-11-19 |
+| Q2 | 支持面（只做 GitHub？） | **只做 GitHub**——`kind` CHECK 锁 `'github_app'`；`GateChannel` 枚举不动；回传走独立集成表 | 2026-11-19 |
+| Q3 | Synchronize 中断（Cancel in Progress） | **中断**——0023 `cancel_requested` + `trg_eval_runs_guard` 扩展 `RUNNING→CANCELLED` + worker 每 Case 边界协作式终止 | 2026-11-19 |
+| Q4 | 私有仓库克隆凭证（建议：永不克隆） | **永不克隆**——评测对象是 HTTP Target；路径映射走 GitHub API 只读 files；写入 §3「明确不做」 | 2026-11-19 |
+| Q5 | 回传形态（Status / Status+评论） | **两者都要分两批**——Commit Status Batch 3 必交付；Markdown 评论顺延半批（Batch 3 尾或 Batch 4）；权限清单收敛；channel_kind 增 `'github'` 属 contracts(M5) 笔 | 2026-11-19 |
+| Q6 | 门禁规则子集（备选先行 vs 改求值语义） | **备选先行**——不改 `evaluateRunGates` 整体计算语义；PR 触发绑定专用冒烟评测集；「同一数据集规则全集对该集全部 run 生效」为产品行为；「适用通道」留未来专项 | 2026-11-19 |
