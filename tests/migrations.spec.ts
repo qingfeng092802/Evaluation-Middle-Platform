@@ -116,17 +116,18 @@ beforeEach(async () => {
 });
 
 describe('AC-1 · 迁移与不可变红线', () => {
-  it('T-10 触发器全名单恰好 21 个，且逐一存在', async () => {
+  it('T-10 触发器全名单恰好 22 个，且逐一存在', async () => {
     const res = await client.query<{ tgname: string }>(
       `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname`,
     );
     const actual = res.rows.map((r) => r.tgname).sort();
     // 17（M1）→ 19（M2 Batch 1 新增 gateway_idempotency 的 no_delete + usage_once）
     // → 20（M4 Batch 3 新增 callback_tokens 的不可变触发器）
-    // → 21（M4 收尾新增 outbound_dispatch_logs 的不可变触发器，0021）。
+    // → 21（M4 收尾新增 outbound_dispatch_logs 的不可变触发器，0021）
+    // → 22（M5 Batch 1 新增 webhook_deliveries 的不可变触发器，0022）。
     // 硬编码是**故意**的：`EXPECTED_TRIGGER_COUNT` 由 `TRIGGER_NAMES.length` 算出，
     // 若只断言两者相等，把名单和数量一起改错就测不出来。
-    expect(EXPECTED_TRIGGER_COUNT).toBe(21);
+    expect(EXPECTED_TRIGGER_COUNT).toBe(22);
     expect(actual).toEqual([...TRIGGER_NAMES].sort());
   });
 
@@ -342,6 +343,102 @@ describe('AC-1 · 迁移与不可变红线', () => {
       [gateId, runId],
     );
     expect(failMsg).toContain('ck_outbound_dispatch_logs_error');
+  });
+
+  // —— 0022 github_push_mode（M5 推入模式数据底座）——
+
+  /** 最小可用的 github 集成行（App 形态；返回 id）。 */
+  async function insertIntegration(): Promise<string> {
+    const row = await one<{ id: string }>(
+      `INSERT INTO github_integrations (name, kind, app_id, installation_id, private_key_ct, webhook_secret, repos, created_by)
+       VALUES ('it-${Math.random().toString(36).slice(2)}', 'github_app', '12345', '67890',
+               'v1:AAAA:BBBB:CCCC', 'sim-webhook-secret', '[{"owner":"o","repo":"r"}]'::jsonb, 't')
+       RETURNING id`,
+    );
+    return row.id;
+  }
+
+  it('T-26 webhook_deliveries UPDATE 抛异常（delivery 只追加，重放读旧行）', async () => {
+    const integrationId = await insertIntegration();
+    const runId = await insertRun({ status: 'COMPLETED' });
+    const d = await one<{ id: string }>(
+      `INSERT INTO webhook_deliveries
+         (delivery_id, integration_id, event, signature_verified, processed_status, run_id, payload_summary)
+       VALUES ('d-${Math.random().toString(36).slice(2)}', $1, 'pull_request', true, 'TRIGGERED', $2,
+               '{"pr":7}'::jsonb)
+       RETURNING id`,
+      [integrationId, runId],
+    );
+    const msg = await expectDbError(
+      `UPDATE webhook_deliveries SET processed_status = 'DEDUPED' WHERE id = $1`,
+      [d.id],
+    );
+    expect(msg).toContain('immutable');
+  });
+
+  it('T-27 webhook_deliveries DELETE 抛异常 + delivery_id 重复插入被 UNIQUE 拒（重放拒绝物理载体）', async () => {
+    const integrationId = await insertIntegration();
+    const runId = await insertRun({ status: 'COMPLETED' });
+    const d = await one<{ id: string }>(
+      `INSERT INTO webhook_deliveries
+         (delivery_id, integration_id, event, signature_verified, processed_status, run_id, payload_summary)
+       VALUES ('d-replay-fixed', $1, 'pull_request', true, 'TRIGGERED', $2, '{"pr":8}'::jsonb)
+       RETURNING id`,
+      [integrationId, runId],
+    );
+    const delMsg = await expectDbError(`DELETE FROM webhook_deliveries WHERE id = $1`, [d.id]);
+    expect(delMsg).toContain('immutable');
+    const dupMsg = await expectDbError(
+      `INSERT INTO webhook_deliveries
+         (delivery_id, integration_id, event, signature_verified, processed_status, payload_summary)
+       VALUES ('d-replay-fixed', $1, 'pull_request', true, 'DEDUPED', '{"pr":8}'::jsonb)`,
+      [integrationId],
+    );
+    expect(dupMsg).toContain('uq_webhook_deliveries_delivery');
+  });
+
+  it('T-28 github_integrations App 与 PAT 凭据互斥（CHECK 双向 + 同缺被拒）', async () => {
+    const base = `INSERT INTO github_integrations (name, kind, private_key_ct, pat_ciphertext, webhook_secret, created_by)`;
+    const bothMsg = await expectDbError(
+      `${base} VALUES ('x', 'github_app', 'v1:A:B:C', 'v1:D:E:F', 's', 't')`,
+    );
+    expect(bothMsg).toContain('ck_github_integrations_cred');
+    const noneMsg = await expectDbError(
+      `${base} VALUES ('y', 'github_app', NULL, NULL, 's', 't')`,
+    );
+    expect(noneMsg).toContain('ck_github_integrations_cred');
+    const unknownKindMsg = await expectDbError(
+      `${base} VALUES ('z', 'gitlab', 'v1:A:B:C', NULL, 's', 't')`,
+    );
+    expect(unknownKindMsg).toContain('ck_github_integrations_kind');
+  });
+});
+
+describe('AC-1 · 0023 协作式取消通道', () => {
+  it('T-29 RUNNING → CANCELLED 合法，cancel_requested 可置位（Q3 取消语义）', async () => {
+    const id = await insertRun({ status: 'RUNNING' });
+    await client.query(`UPDATE eval_runs SET cancel_requested = true WHERE id = $1`, [id]);
+    await client.query(`UPDATE eval_runs SET status = 'CANCELLED' WHERE id = $1`, [id]);
+    const row = await one<{ status: string; cancel_requested: boolean }>(
+      `SELECT status, cancel_requested FROM eval_runs WHERE id = $1`,
+      [id],
+    );
+    expect(row.status).toBe('CANCELLED');
+    expect(row.cancel_requested).toBe(true);
+  });
+
+  it('T-30 COMPLETED → CANCELLED 被拒（终态整行冻结）', async () => {
+    const id = await insertRun({ status: 'COMPLETED' });
+    const msg = await expectDbError(`UPDATE eval_runs SET status = 'CANCELLED' WHERE id = $1`, [id]);
+    expect(msg).toContain('terminal');
+  });
+
+  it('T-31 PENDING → CANCELLED 合法（排队取消：既有语义，刻意不收窄——偏差已申报晨会复核）', async () => {
+    const id = await insertRun({ status: 'PENDING' });
+    await client.query(`UPDATE eval_runs SET cancel_requested = true WHERE id = $1`, [id]);
+    await client.query(`UPDATE eval_runs SET status = 'CANCELLED' WHERE id = $1`, [id]);
+    const row = await one<{ status: string }>(`SELECT status FROM eval_runs WHERE id = $1`, [id]);
+    expect(row.status).toBe('CANCELLED');
   });
 });
 

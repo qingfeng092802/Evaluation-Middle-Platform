@@ -26,6 +26,9 @@ export * from './run.js';
 // ED-08 · 基线与门禁
 export * from './gate.js';
 
+// M5 推入模式：GitHub Webhook 集成（入站白名单 / 集成配置非对称 / 出站声明）
+export * from './github.js';
+
 // 厂商凭证与单价（PG-09 / PG-10；成本唯一事实源）
 export * from './provider.js';
 

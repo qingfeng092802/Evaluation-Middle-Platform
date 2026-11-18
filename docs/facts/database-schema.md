@@ -10,8 +10,9 @@
 > （**2026-11-12 M2 Batch 1 增补第 16 张 `gateway_idempotency`**，见 §2.16。）
 >
 > **2026-11-18 M4 Batch 3 增补第 17 张 `callback_tokens`**（CI 回调 Token，0020，见 §2.17）；
-> **2026-11-19 M4 收尾增补第 18 张 `outbound_dispatch_logs`**（出站派发留痕，0021，见 §2.18）。
-> 合计 **18 张**，以 `src/contracts/src/db-schema.ts` 的 `TABLE_NAMES` 为可编译索引。> （需求方口头为「13 张」，因 `targets` / `target_versions` 原为一组、展开后实为 14 张；
+> **2026-11-19 M4 收尾增补第 18 张 `outbound_dispatch_logs`**（出站派发留痕，0021，见 §2.18）；
+> **2026-11-19 M5 Batch 1 增补第 19–21 张** `github_integrations` / `webhook_deliveries`（只追加）/ `pr_trigger_rules`（0022，见 §2.19–§2.21），`eval_runs` 增 `cancel_requested`（0023，见 §2.9 附注）。
+> 合计 **21 张**，以 `src/contracts/src/db-schema.ts` 的 `TABLE_NAMES` 为可编译索引。> （需求方口头为「13 张」，因 `targets` / `target_versions` 原为一组、展开后实为 14 张；
 > 加上 2026-11-07 拍板新增的 `case_human_labels`（`OUT-5` 的物理落点），合计 **15 张**。以本文件为准。）
 >
 > **2026-11-15 复核：** 合计 **16 张**（M2 新增 `gateway_idempotency`，见 `0019_claim_epoch.sql`）。:9 的「16 张」为现行值，本括号原写「15 张」为 M1 历史值，保留原文并以此复核行为准。
@@ -85,12 +86,16 @@
 | 16 | `gateway_idempotency` | `0019_claim_epoch.sql` | **不可删**；用量只允许「占位 → 回填」一次 |
 | 17 | `callback_tokens` | `0020_callback_tokens.sql` | **是**（重置 = 新签发一行） |
 | 18 | `outbound_dispatch_logs` | `0021_outbound_dispatch_logs.sql` | **是**（只追加；重试 = 新增一行） |
+| 19 | `github_integrations` | `0022_github_push_mode.sql` | 否（可编辑配置；凭据三列密文/只写） |
+| 20 | `webhook_deliveries` | `0022_github_push_mode.sql` | **是**（只追加；重放 = 读既有行返回 DEDUPED） |
+| 21 | `pr_trigger_rules` | `0022_github_push_mode.sql` | 否（可编辑映射） |
 | — | 不可变触发器 | `0016_immutability_triggers.sql` | — |
 | — | 队列辅助函数 | `0017_queue_functions.sql` | — |
 | — | 心跳租约（`heartbeat_at` + 回收判据） | `0018_heartbeat_lease.sql` | — |
 | — | Fencing token（`claim_epoch`）+ 幂等账本 | `0019_claim_epoch.sql` | — |
 | — | CI 回调 Token 表 | `0020_callback_tokens.sql` | — |
 | — | 出站派发留痕表 | `0021_outbound_dispatch_logs.sql` | — |
+| — | GitHub 推入模式三表 + `eval_runs.cancel_requested` | `0022_github_push_mode.sql` / `0023_eval_runs_cancel.sql` | — |
 
 ### 1.1 ER 关系图
 
@@ -893,6 +898,105 @@ CREATE INDEX ix_outbound_dispatch_logs_gate ON outbound_dispatch_logs (gate_id, 
 
 ---
 
+### 2.19 `github_integrations` — GitHub 集成配置（M5 Batch 1，`0022_github_push_mode.sql`）
+
+> **要解决的事**：Q0 红线推翻后（需求方 2026-11-19，见 SPEC-M5 §1-Q0），GitHub 凭证以
+> **受控形态**由平台持有：App 私钥 / webhook_secret 落库，供推入模式的验签与回传使用。
+
+```sql
+CREATE TABLE github_integrations (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  name            text        NOT NULL,
+  kind            text        NOT NULL DEFAULT 'github_app',
+  app_id          text,                       -- 方案 A；方案 B（PAT）为 NULL
+  installation_id text,                       -- 方案 A
+  private_key_ct  text,                       -- 方案 A：PEM 密文（v1: 前缀）
+  pat_ciphertext  text,                       -- 方案 B：PAT 密文（与 A 互斥）
+  webhook_secret  text        NOT NULL,       -- HMAC 校验密钥；永不出 API（读取只有布尔位）
+  repos           jsonb       NOT NULL DEFAULT '[]',
+  is_active       boolean     NOT NULL DEFAULT true,
+  created_by      text        NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at      timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ck_github_integrations_kind CHECK (kind IN ('github_app')),
+  CONSTRAINT ck_github_integrations_cred CHECK (
+    (private_key_ct IS NOT NULL AND pat_ciphertext IS NULL)
+    OR (private_key_ct IS NULL AND pat_ciphertext IS NOT NULL)
+  )
+);
+```
+
+**设计说明**：凭据互斥由 CHECK 兜底（App 与 PAT 二选一，Q1：M5 只实现 App，PAT 列保留为
+GHES 降级备选）；`private_key_ct` / `pat_ciphertext` 复用 `provider-key-cipher` 的 `v1:` 格式；
+`webhook_secret` 为 HMAC 校验共享密钥，**读取契约只有布尔位**（`WRITE_ONLY_FIELDS` 在案）。
+表可编辑（is_active / 配置更新），**不进 §3.2 循环**；`kind` 锁 `'github_app'`（Q2）。
+
+---
+
+### 2.20 `webhook_deliveries` — Webhook 投递账本（M5 Batch 1，`0022_github_push_mode.sql`）
+
+> **要解决的事**：重放拒绝的**物理载体**——`X-GitHub-Delivery` GUID 唯一约束使同一投递
+> 二次到达时读既有行返回 `DEDUPED`，不再触发跑批；同时是事件处理审计。
+
+```sql
+CREATE TABLE webhook_deliveries (
+  id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  delivery_id       text        NOT NULL,   -- X-GitHub-Delivery GUID
+  integration_id    uuid        NOT NULL REFERENCES github_integrations (id) ON DELETE CASCADE,
+  event             text        NOT NULL,
+  signature_verified boolean    NOT NULL,
+  processed_status  text        NOT NULL,   -- TRIGGERED / SKIPPED_CLOSED / SKIPPED_UNBOUND / DEDUPED / REJECTED_SIGNATURE
+  run_id            uuid        REFERENCES eval_runs (id),   -- 无 ON DELETE：eval_runs 不可删（IM 系）
+  payload_summary   jsonb       NOT NULL,   -- 白名单摘要（repo/pr 号/sha/action），不落全量载荷
+  received_at       timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_webhook_deliveries_delivery UNIQUE (delivery_id),
+  CONSTRAINT ck_webhook_deliveries_status CHECK (processed_status IN
+    ('TRIGGERED','SKIPPED_CLOSED','SKIPPED_UNBOUND','DEDUPED','REJECTED_SIGNATURE'))
+);
+CREATE INDEX ix_webhook_deliveries_integration ON webhook_deliveries (integration_id, received_at DESC);
+```
+
+> **触发器的特殊性**：单条组合触发器（0020 同款范式），整表不可变——重放处理只读既有行。
+> `payload_summary` 是白名单摘要：GitHub 全量载荷经 zod 白名单 parse 后只留
+> repo/pr 号/sha/action/labels，**未知字段不进系统**。
+
+---
+
+### 2.21 `pr_trigger_rules` — PR → 评测集触发映射（M5 Batch 1，`0022_github_push_mode.sql`）
+
+> **要解决的事**：PR 事件如何决定触发哪个评测集（Q6 裁定：绑定 **PR 专用冒烟集**，
+> 不改门禁求值内核）。
+
+```sql
+CREATE TABLE pr_trigger_rules (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  integration_id  uuid        NOT NULL REFERENCES github_integrations (id) ON DELETE CASCADE,
+  repo_full_name  text        NOT NULL,
+  target_branch   text,                       -- 策略③：目标分支精确匹配
+  path_globs      jsonb,                      -- 策略②：预留（匹配需 GitHub API files 只读列表，Batch 3）
+  label           text,                       -- 策略①：PR Label 精确匹配（优先级最高）
+  dataset_id      uuid        NOT NULL REFERENCES datasets (id) ON DELETE RESTRICT,
+  target_id       uuid        REFERENCES targets (id) ON DELETE RESTRICT,
+  enabled         boolean     NOT NULL DEFAULT true,
+  created_by      text        NOT NULL,
+  created_at      timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT ck_pr_trigger_rules_strategy CHECK (
+    label IS NOT NULL OR path_globs IS NOT NULL OR target_branch IS NOT NULL
+  )
+);
+CREATE INDEX ix_pr_trigger_rules_repo ON pr_trigger_rules (repo_full_name, enabled);
+```
+
+**设计说明**：匹配优先级 label > path_globs > target_branch（Q4：pathGlobs 匹配需 GitHub API
+files 只读列表，Batch 3 随 Installation Token 落地）；多命中各自触发一个 run；
+`dataset_id` 用 RESTRICT——评测集容器不可连带删除历史映射。
+
+---
+
+## 3. 不可变触发器（`0016_immutability_triggers.sql`）
+
+---
+
 ## 3. 不可变触发器（`0016_immutability_triggers.sql`）
 
 > **`PT-2` 不能只写在文档里，必须由数据库兜底。**
@@ -1111,7 +1215,7 @@ $$;
 | ER-4 | `trigger_source IN ('MANUAL','CI_WEBHOOK')` | `eval_runs` | 无法区分人工/CI 触发 |
 | ER-5 | `baseline_run_id <> id` | `eval_runs` | 自己对比自己，Δ 恒为 0 却看着正常 |
 | BL-1 | 部分唯一索引「每集一个 CONFIRMED」 | `baselines` | 双基线，退化计算全废 |
-| IM-1 | **9** 张表 `UPDATE`/`DELETE` 拒绝触发器 | `0016` 循环 7 张 + `0020`/`0021` 组合触发器 2 张 | 历史被静默改写 |
+| IM-1 | **10** 张表 `UPDATE`/`DELETE` 拒绝触发器 | `0016` 循环 7 张 + `0020`/`0021`/`0022` 组合触发器 3 张 | 历史被静默改写 |
 | IM-2 | `eval_runs` 终态冻结触发器 | `0016` | 已发布结果被改 |
 | Q-1 | 僵尸回收函数存在且被调度 | `0017` §4.1 | 重启后任务永卡 `RUNNING` |
 | HL-1 | `case_human_labels` 只增不改（无 `UPDATE`/`DELETE`） | `0016` | 人工标注被事后篡改，且倒推开不可变评测结果 |
@@ -1134,7 +1238,7 @@ $$;
 | T-07 | 第二条 `CONFIRMED` 基线插入失败 | 先插一条 `CONFIRMED`，再插 → 唯一索引冲突 |
 | T-08 | `baselines` 已决行再决抛异常 | `CONFIRMED` 后改 `REJECTED` → 抛异常 |
 | T-09 | `dataset_cases` 同版本重复 `case_key` 插入失败 | 唯一约束冲突 |
-| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **21** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17 + `gateway_idempotency` × 2 = 19 + `callback_tokens` × 1 = 20 + `outbound_dispatch_logs` × 1 = **21**）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES`。**勘误（2026-11-19）**：本行自 0020 起漏更（代码已为 20，此处仍写 19），随 0021 一并修正 |
+| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **22** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17 + `gateway_idempotency` × 2 = 19 + `callback_tokens` × 1 = 20 + `outbound_dispatch_logs` × 1 = 21 + `webhook_deliveries` × 1 = **22**）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES`。**勘误（2026-11-19）**：本行自 0020 起漏更（代码已为 20，此处仍写 19），随 0021 一并修正 |
 | T-11 | `cost_total` 生成列随分列自动更新 | `UPDATE` 分列 → 断言 `cost_total = target + judge` |
 | T-12 | `ck_eval_runs_failed_null_score` 生效 | 置 `FAILED` 且 `score_overall` 非 NULL → 抛异常 |
 | T-13 | `reclaim_stale_runs()` 把超时 `RUNNING` 退回 `PENDING` | 造一行 `RUNNING` + `started_at` 早于阈值（`heartbeat_at` 为 NULL）→ 调用函数 → 断言状态与 `started_at IS NULL` |
@@ -1165,3 +1269,4 @@ $$;
 | 2026-11-12 | **M2 Batch 1：fencing token + 网关幂等账本（`0019_claim_epoch.sql`）** | ① **M2-3 fencing**：§2.9 `eval_runs` 增 `claim_epoch bigint NOT NULL DEFAULT 0`；`claim_next_run()` 领取时 `claim_epoch + 1`，返回类型改为 `SETOF eval_runs`（空队列不再返回全 NULL 行）；`reclaim_stale_runs()` **不回退** epoch（单调性即安全前提）。worker 的心跳 / 结果 / 终态写入全部带 `WHERE claim_epoch = $epoch`，旧属主写入影响 0 行 ⇒ 立即放弃。**补的是 0018 留下的那个洞**：`heartbeat_at` 只回答「能不能回收」，回答不了「回收后谁能写」—— 长停顿（非死亡）的旧属主醒来会把它重新点亮。② **M2-1 幂等账本**：新增 §2.16 第 16 张表 `gateway_idempotency`（`UNIQUE(idempotency_key)`，键派生自 `run_id + case_key + attempt_kind`，**不存明文 Key**）；不可变语义为**不可删** + **用量只允许 `0 → 实际值` 回填一次**（刻意不加 `no_update`：占位在调用之前，回填补不进去会导致**少计费**，比重复计费更难发现）。③ §6 `T-10` 触发器 17 → **19**（`trg_gateway_idempotency_no_delete` + `trg_gateway_idempotency_usage_once`）。down 脚本：`db/migrations/down/0019_claim_epoch.down.sql`。 |
 | 2026-11-18 | **M4 Batch 3：CI 回调 Token（`0020_callback_tokens.sql`）——本条为 2026-11-19 回填** | 新增第 17 张表（US-018 拉取鉴权，Q1=C 裁定）：`callback_tokens`，**只存 SHA-256 哈希**、明文仅签发响应出现一次、`expires_at` MVP 口径为 NULL（不过期）；不可变（重置 = 新签发），单条组合触发器 `trg_callback_tokens_immutable`（0020 起的新范式，不进 §3.2 循环）。**本文件当时漏记此条**（§1 / §2 / §6 / §7 均缺席，且 §6 T-10 停在 19 与代码的 20 矛盾），随 0021 一并回填修正。down 脚本：`db/migrations/down/0020_callback_tokens.down.sql`。 |
 | 2026-11-19 | **M4 收尾：出站派发留痕（`0021_outbound_dispatch_logs.sql`）** | 需求方指令「派发失败不得只有 console.warn」：新增第 18 张表（§2.18），SUCCESS / FAILED 都落行、FAILED 必带 `error_message`（CHECK 双向强制）、HTTP 非 2xx 显式记 FAILED（修复 fetch 不抛错的静默成功漏洞）；只追加不可变（组合触发器），`retry_count` 按规格落列、当前恒为 0（无自动重试引擎，重试 = 新增行）。§0 计数 16 → **18**；§1 增两行；ER 图加三条关系；§5 `IM-1` 7 → **9** 张；§6 `T-10` → **21** 并勘误 0020 漏更。契约注册：`db-schema.ts` 表/触发器/横切迁移同步 +1；openapi 增 `OutboundDispatchLog` 与 `GET /api/gates/{gateId}/dispatch-logs`。down 脚本：`db/migrations/down/0021_outbound_dispatch_logs.down.sql`。 |
+| 2026-11-19 | **M5 Batch 1：GitHub 推入模式数据底座（`0022_github_push_mode.sql` + `0023_eval_runs_cancel.sql`）** | 需求方 2026-11-19 七项裁定（SPEC-M5 §附录 A）落地：① 新增三张表——§2.19 `github_integrations`（App 私钥/webhook_secret 受控持有，App/PAT 凭据互斥 CHECK，`kind` 锁 `'github_app'`）、§2.20 `webhook_deliveries`（`delivery_id` UNIQUE 幂等账本，**只追加不可变**——重放拒绝的物理载体）、§2.21 `pr_trigger_rules`（label > pathGlobs > targetBranch 映射，绑定 PR 专用冒烟集）。② `eval_runs` 增 `cancel_requested boolean NOT NULL DEFAULT false`（0023，Q3 协作式取消通道；**不改 guard**——`RUNNING→CANCELLED` 与 `PENDING→CANCELLED` 在 0016 起即合法边，需求方口径「只有 RUNNING 能转」与现状的偏差已在 SPEC 执行留档申报晨会复核）。③ §0 计数 18 → **21**；§1 增三行 + 横切两行；§5 `IM-1` 9 → **10** 张；§6 `T-10` → **22**。④ 凭据安全：`private_key_ct`/`pat_ciphertext` 复用 `v1:` AES-256-GCM；`webhook_secret` 读取契约只有布尔位（`WRITE_ONLY_FIELDS` 在案）。契约注册：`db-schema.ts` 表 21 / 触发器 22 / 横切迁移 +2；openapi 增 webhook 入站、集成 CRUD、`GithubIntegration*` / `PrTriggerRule*` / `PullRequestEvent` / `CommitStatusInput` 组件。down 脚本：`db/migrations/down/0022_github_push_mode.down.sql`、`0023_eval_runs_cancel.down.sql`。 |

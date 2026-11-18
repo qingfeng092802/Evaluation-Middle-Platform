@@ -48,6 +48,8 @@ tags:
     description: 基线提名与确认（BL-1…BL-4）
   - name: gates
     description: PG-09 门禁规则（P1）与 CI 侧结果拉取（US-018）
+  - name: integrations
+    description: M5 推入模式——GitHub Webhook 集成（入站事件 / 集成配置 / PR 触发映射）
   - name: providers
     description: PG-09 模型网关（P0）
   - name: ledger
@@ -890,6 +892,172 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  # ------------------------------------------------------- integrations (M5)
+  /api/integrations/github/webhook:
+    post:
+      tags: [integrations]
+      summary: GitHub Webhook 入站（Q1=C 推入模式，Q3 中断语义）
+      description: |
+        平台唯一的入站端点。鉴权为 **HMAC-SHA256**（`X-Hub-Signature-256`，密钥 =
+        集成的 `webhook_secret`，常量时间比较）——**签名失败 401 且不落任何投递记录**。
+        幂等：`X-GitHub-Delivery` GUID 唯一约束，重放返回 200 `{deduped:true}`。
+        事件白名单：`pull_request` 的 opened / synchronize / closed（`SPEC-M5.md` §2.4）。
+        closed → `SKIPPED_CLOSED`；opened/synchronize 按 `pr_trigger_rules`
+        （label > pathGlobs > targetBranch，Q6：绑定 PR 专用冒烟集）触发评测，
+        零命中 → 202 `SKIPPED_UNBOUND`。
+      parameters:
+        - name: X-Hub-Signature-256
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-GitHub-Event
+          in: header
+          required: true
+          schema: { type: string }
+        - name: X-GitHub-Delivery
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PullRequestEvent' }
+      responses:
+        '200':
+          description: 已处理（TRIGGERED / SKIPPED_CLOSED / DEDUPED）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookResponse' }
+        '202':
+          description: 已受理但不触发（SKIPPED_UNBOUND）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookResponse' }
+        '401':
+          description: 签名缺失 / 校验失败（不落任何投递记录）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/integrations/github:
+    get:
+      tags: [integrations]
+      summary: GitHub 集成列表（凭据只写不读——响应只有布尔位）
+      responses:
+        '200':
+          description: 集成列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/GithubIntegration' }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [integrations]
+      summary: 创建 GitHub App 集成（Q1 方案 A）
+      description: |
+        `privateKey` / `webhookSecret` 明文**仅在请求体**出现一次，服务端立即
+        AES-256-GCM 加密落库（`v1:` 格式，复用厂商密钥机制）；响应零凭据。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubIntegrationCreate' }
+      responses:
+        '201':
+          description: 已创建（零凭据读取形状）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubIntegration' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
+
+  /api/integrations/github/{integrationId}:
+    get:
+      tags: [integrations]
+      summary: 集成详情（零凭据——泄密扫描锚点）
+      parameters:
+        - name: integrationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 集成详情（只有 hasPrivateKey / hasWebhookSecret 布尔位）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubIntegration' }
+        '404':
+          description: 集成不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+    patch:
+      tags: [integrations]
+      summary: 更新集成（不传即不改；privateKey / webhookSecret 重传 = 密文覆写）
+      parameters:
+        - name: integrationId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GithubIntegrationUpdate' }
+      responses:
+        '200':
+          description: 已更新（零凭据读取形状）
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GithubIntegration' }
+        '404':
+          description: 集成不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
+  /api/pr-trigger-rules:
+    get:
+      tags: [integrations]
+      summary: PR → 评测集触发规则列表（Q6：绑定 PR 专用冒烟集）
+      parameters:
+        - name: integrationId
+          in: query
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 规则列表
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/PrTriggerRule' }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+    post:
+      tags: [integrations]
+      summary: 创建触发规则（至少一种匹配策略：label / pathGlobs / targetBranch）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PrTriggerRuleCreate' }
+      responses:
+        '201':
+          description: 已创建
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PrTriggerRule' }
+        '400': { $ref: '#/components/responses/ValidationFailed' }
 
   # ---------------------------------------------------------------- providers
   /api/providers:
@@ -1759,6 +1927,141 @@ components:
         errorMessage: { type: [string, 'null'] }
         retryCount: { type: integer, minimum: 0, description: 当前恒为 0（无自动重试引擎） }
         dispatchedAt: { type: string, format: date-time }
+
+    PullRequestEvent:
+      type: object
+      required: [action, number, repository, pull_request]
+      description: M5 入站白名单——GitHub 全量载荷 parse 即剥离未知字段（不落库）
+      properties:
+        action: { type: string, enum: [opened, synchronize, closed] }
+        number: { type: integer, minimum: 1 }
+        repository:
+          type: object
+          required: [full_name]
+          properties:
+            full_name: { type: string }
+        pull_request:
+          type: object
+          required: [head, base, html_url]
+          properties:
+            head:
+              type: object
+              required: [sha, ref]
+              properties:
+                sha: { type: string }
+                ref: { type: string }
+            base:
+              type: object
+              required: [ref]
+              properties:
+                ref: { type: string }
+            labels:
+              type: array
+              items:
+                type: object
+                properties: { name: { type: string } }
+            html_url: { type: string, format: uri }
+
+    WebhookResponse:
+      type: object
+      required: [status, deduped, runId]
+      description: 入站处理结果（200 / 202 同构；401 走 ErrorResponse）
+      properties:
+        status: { type: string, enum: [TRIGGERED, SKIPPED_CLOSED, SKIPPED_UNBOUND, DEDUPED, REJECTED_SIGNATURE] }
+        deduped: { type: boolean }
+        runId: { type: [string, 'null'], format: uuid }
+
+    GithubRepoRef:
+      type: object
+      required: [owner, repo]
+      properties:
+        owner: { type: string }
+        repo: { type: string }
+
+    GithubIntegration:
+      type: object
+      required: [id, name, kind, appId, installationId, hasPrivateKey, hasWebhookSecret, repos, isActive, createdAt, updatedAt]
+      description: 读取形状**零凭据**——只有布尔位（WRITE_ONLY_FIELDS 在案；泄密扫描锚点）
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        kind: { type: string, enum: [github_app] }
+        appId: { type: string }
+        installationId: { type: string }
+        hasPrivateKey: { type: boolean }
+        hasWebhookSecret: { type: boolean }
+        repos: { type: array, items: { $ref: '#/components/schemas/GithubRepoRef' } }
+        isActive: { type: boolean }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+
+    GithubIntegrationCreate:
+      type: object
+      required: [name, appId, installationId, privateKey, webhookSecret, repos]
+      description: 凭据明文仅在请求体出现一次，服务端立即 AES-256-GCM 加密（v1: 格式）
+      properties:
+        name: { type: string, maxLength: 120 }
+        appId: { type: string }
+        installationId: { type: string }
+        privateKey: { type: string, description: PEM 全文 }
+        webhookSecret: { type: string }
+        repos: { type: array, minItems: 1, items: { $ref: '#/components/schemas/GithubRepoRef' } }
+
+    GithubIntegrationUpdate:
+      type: object
+      description: 不传即不改；privateKey / webhookSecret 重传 = 密文覆写
+      properties:
+        name: { type: string, maxLength: 120 }
+        installationId: { type: string }
+        privateKey: { type: string }
+        webhookSecret: { type: string }
+        repos: { type: array, items: { $ref: '#/components/schemas/GithubRepoRef' } }
+        isActive: { type: boolean }
+
+    PrTriggerRule:
+      type: object
+      required: [id, integrationId, repoFullName, datasetId, enabled, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        integrationId: { type: string, format: uuid }
+        repoFullName: { type: string }
+        targetBranch: { type: [string, 'null'] }
+        pathGlobs: { type: [array, 'null'], items: { type: string } }
+        label: { type: [string, 'null'] }
+        datasetId: { type: string, format: uuid }
+        targetId: { type: [string, 'null'], format: uuid }
+        enabled: { type: boolean }
+        createdAt: { type: string, format: date-time }
+
+    PrTriggerRuleCreate:
+      type: object
+      required: [integrationId, repoFullName, datasetId]
+      description: 至少一种匹配策略（label / pathGlobs / targetBranch 三选以上）
+      properties:
+        integrationId: { type: string, format: uuid }
+        repoFullName: { type: string }
+        targetBranch: { type: string }
+        pathGlobs: { type: array, items: { type: string } }
+        label: { type: string }
+        datasetId: { type: string, format: uuid }
+        targetId: { type: [string, 'null'], format: uuid }
+
+    CommitStatusInput:
+      type: object
+      required: [state, targetUrl, description, context]
+      description: 出站声明——平台调用 GitHub API `POST /repos/{o}/{r}/statuses/{sha}`（非本平台路由；Q5 Status 必交付）
+      properties:
+        state: { type: string, enum: [error, failure, pending, success] }
+        targetUrl: { type: string, format: uri }
+        description: { type: string, maxLength: 140 }
+        context: { type: string }
+
+    PRCommentInput:
+      type: object
+      required: [body]
+      description: 出站声明——`POST /repos/{o}/{r}/issues/{n}/comments`（Q5 评论顺延半批；body 复用 CI 侧 renderMarkdown 产物）
+      properties:
+        body: { type: string }
 
     RegressionGate:
       type: object

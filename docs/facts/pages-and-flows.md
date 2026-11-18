@@ -281,7 +281,7 @@
 | **基线确认** | 待确认提名列表（运行名 / 提名理由 / 提名时间）；**「确认」/「驳回」** | P1 | `US-020` `US-013` |
 | **推送渠道** | 飞书 / 企微 Webhook URL；生成回调 Token | P1 | `US-018` |
 
-**GitHub 推送的实现边界（已确认）**：平台**只输出结构化 JSON 门禁结果**，由 CI 侧（GitHub Actions）读取并写 PR 评论。平台侧**永不持有、永不输入任何 GitHub PAT**。因此本 Tab **不出现任何 GitHub 凭据输入框**。规则依据：`docs/工程规则.md` §9。
+**GitHub 集成的实现边界（2026-11-19 需求方裁定修订，原「已确认」拉取边界见 `SPEC-M4.md` §1.10-Q1）**：门禁结果走**双通道**——① 拉取：平台**只输出结构化 JSON 门禁结果**（`GET /api/gates/results/{runId}`），CI 侧读取后自行写 PR 评论；② 推入（M5，`SPEC-M5.md`）：平台接收 GitHub PR 事件 Webhook 并回传 Commit Status / PR 评论。GitHub 凭证由平台**加密持有**（GitHub App 私钥 / PAT，AES-256-GCM，见 `工程规则.md` §9 修订），本 Tab **不出现任何 GitHub 凭据明文与回显**（读取形状只有布尔位）。规则依据：`docs/工程规则.md` §9（2026-11-19 修订）+ `docs/Spec/SPEC-M5.md` §附录 C。
 
 ---
 

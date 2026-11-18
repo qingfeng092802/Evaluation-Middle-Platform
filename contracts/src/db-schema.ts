@@ -8,7 +8,7 @@
  *  - 15 张核心表的**名字与迁移顺序**（少一张 = 外键建不出来；0019-0021 建的
  *    三张横切表见 `CROSS_CUTTING_MIGRATIONS`）；
  *  - **哪些表整表不可变**、`eval_runs` 何时冻结；
- *  - **触发器的确切名字**（`T-10` 断言用，现 21 个）。
+ *  - **触发器的确切名字**（`T-10` 断言用，现 22 个）。
  *
  * 为什么触发器名要进代码：`technical-solution.md` TS-4 短板 3 已点名
  * 「Drizzle 表达不了触发器，schema 与真实 DDL 存在漂移风险」。
@@ -41,6 +41,10 @@ export const TABLE_NAMES = [
   'callback_tokens',
   // M4 收尾（0021）：出站派发留痕（PG-09 渠道历史 / 失败可追责，只追加）
   'outbound_dispatch_logs',
+  // M5 Batch 1（0022）：GitHub 推入模式——集成配置 / webhook 投递账本（只追加）/ PR 触发映射
+  'github_integrations',
+  'webhook_deliveries',
+  'pr_trigger_rules',
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];
 
@@ -101,6 +105,16 @@ export const CROSS_CUTTING_MIGRATIONS = [
     file: '0021_outbound_dispatch_logs.sql',
     purpose: 'outbound dispatch audit log (US-018 delivery history, append-only)',
   },
+  {
+    no: 22,
+    file: '0022_github_push_mode.sql',
+    purpose: 'github push-mode: integrations / webhook deliveries (append-only) / pr trigger rules',
+  },
+  {
+    no: 23,
+    file: '0023_eval_runs_cancel.sql',
+    purpose: 'eval_runs.cancel_requested (Q3 cooperative cancel channel)',
+  },
 ] as const;
 
 /**
@@ -119,6 +133,8 @@ export const FULLY_IMMUTABLE_TABLES = [
   'case_human_labels',
   // M4 收尾（0021）：派发留痕只追加（重试 / 补投递 = 新增一行）
   'outbound_dispatch_logs',
+  // M5 Batch 1（0022）：webhook 投递账本只追加（重放 = 读既有行返回 DEDUPED）
+  'webhook_deliveries',
 ] as const satisfies ReadonlyArray<TableName>;
 
 /**
@@ -146,8 +162,9 @@ export const STATE_MACHINE_GUARDED_TABLES = [
  *      + `gateway_idempotency` 的 `no_delete` + `usage_once` =  2   ← M2-1（0019）
  *      + `callback_tokens` 的 `immutable`（组合触发器）  =  1   ← M4（0020）
  *      + `outbound_dispatch_logs` 的 `immutable`（组合触发器） = 1 ← M4 收尾（0021）
+ *      + `webhook_deliveries` 的 `immutable`（组合触发器） =  1   ← M5（0022）
  *                                                     ------
- *                                                        21
+ *                                                        22
  *
  * ⚠️ `gateway_idempotency` 刻意**没有** `no_update`：占位发生在调用之前（此时
  * 还没有用量），真实用量必须调用成功后回填。它以 `usage_once` 取代 `no_update`，
@@ -162,6 +179,7 @@ export const STATE_MACHINE_GUARDED_TABLES = [
  *
  * 2026-11-18（M4 Batch 3）：新增 `callback_tokens`（0020）后变为 **20**。
  * 2026-11-19（M4 收尾）：新增 `outbound_dispatch_logs`（0021）后变为 **21**。
+ * 2026-11-19（M5 Batch 1）：新增 `webhook_deliveries`（0022）后变为 **22**。
  */
 export const TRIGGER_NAMES = [
   'trg_dataset_versions_no_update',
@@ -188,6 +206,8 @@ export const TRIGGER_NAMES = [
   'trg_callback_tokens_immutable',
   // M4 收尾（0021）：出站派发留痕只追加（重试 / 补投递 = 新增一行）
   'trg_outbound_dispatch_logs_immutable',
+  // M5（0022）：webhook 投递账本只追加（重放 = 读既有行返回 DEDUPED）
+  'trg_webhook_deliveries_immutable',
 ] as const;
 export type TriggerName = (typeof TRIGGER_NAMES)[number];
 

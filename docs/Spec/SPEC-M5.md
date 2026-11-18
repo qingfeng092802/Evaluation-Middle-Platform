@@ -22,10 +22,10 @@
 | # | 检查项 | 判定方法 | 状态 |
 |---|---|---|---|
 | 1 | M4 已合并入 `main` 并打 `v0.1.0-m4` | `git tag -l` 含 `v0.1.0-m4`；origin 三个里程碑 tag 齐 | ✅ 已核实（2026-11-19，merge `a74c789`） |
-| 2 | **`工程规则.md` §9 红线修订入库**（「不在项目中配置 GitHub PAT」→「GitHub 凭证受控持有」，修订条文见 §1-Q0 附） | 读 §9 原文 | 🟡 **已批准（Q0，2026-11-19）、条文定稿——随第一笔 `contracts(M5)` 入库，不提前提交** |
-| 3 | `pages-and-flows.md` PG-09 GitHub 边界句同步修订 | 读 PG-09 边界段 | 🟡 同行 2：已批准、条文定稿，随 `contracts(M5)` 入库 |
+| 2 | **`工程规则.md` §9 红线修订入库**（「不在项目中配置 GitHub PAT」→「GitHub 凭证受控持有」，修订条文见 §1-Q0 附） | 读 §9 原文 | ✅ **已入库（contracts(M5) 笔，2026-11-19）**——条款改写 + 变更记录行 |
+| 3 | `pages-and-flows.md` PG-09 GitHub 边界句同步修订 | 读 PG-09 边界段 | ✅ **已入库（同笔）**——双通道边界表述 |
 | 4 | 本 SPEC §1 待确认（Q1–Q6）全部裁定 | 见 §1 | ✅ **已裁定（2026-11-19，回填见 §附录 A）** |
-| 5 | `milestones.md` 增补 M5 行 + 故事归属提案（US-022 webhook 集成 / US-023 结果回传，见 §5） | 读 milestones | ⬜ 待执行（随 `contracts(M5)` 或 Batch 1 入库） |
+| 5 | `milestones.md` 增补 M5 行 + 故事归属提案（US-022 webhook 集成 / US-023 结果回传，见 §5） | 读 milestones | ✅ **已入库（同笔）**——§1 总览 M5 行 + 新 §6 M5 节 + 原 §6–§9 重编号 §7–§10 + 变更记录 |
 | 6 | 拉取模式契约边界已实测成立（推入模式的回传与判定语义复用它） | `scripts/ci-pull-simulator.ts` 实跑 | ✅ 11 项断言 0 失败（`572f36a`，2026-11-19） |
 | 7 | 「门禁规则整体计算」行为已实测留档（Q6 的背景事实） | simulator 用例 A/B 复现：阻断线启用 ⇒ 该集全部 run FAIL | ✅ 已留档（`572f36a` 提交信息 + 本 SPEC §1-Q6） |
 
@@ -344,10 +344,10 @@ CREATE TABLE pr_trigger_rules (
 
 | 项 | 原文 / 现状 | M5 变更 | 状态 |
 |---|---|---|---|
-| `工程规则.md` §9 | 「不在项目中配置 GitHub PAT」 | 推翻为「受控持有（App/PAT 密文）」，其余条款不变；修订条文见 §1-Q0 | 🟡 **已批准（Q0，2026-11-19）**——随第一笔 `contracts(M5)` 入库 |
-| `pages-and-flows.md` PG-09 边界句 | 「永不持有、永不输入任何 GitHub PAT；本 Tab 不出现任何 GitHub 凭据输入框」 | 改为「凭据由平台加密持有；本 Tab 不出现凭据明文与回显」 | 🟡 同上（Q0 批准，随 `contracts(M5)` 入库） |
+| `工程规则.md` §9 | 「不在项目中配置 GitHub PAT」 | 推翻为「受控持有（App/PAT 密文）」，其余条款不变；修订条文见 §1-Q0 | ✅ **已入库（contracts(M5) 笔，2026-11-19）** |
+| `pages-and-flows.md` PG-09 边界句 | 「永不持有、永不输入任何 GitHub PAT；本 Tab 不出现任何 GitHub 凭据输入框」 | 改为「凭据由平台加密持有；本 Tab 不出现凭据明文与回显」 | ✅ **已入库（同笔）** |
 | `SPEC-M4.md` §1.10-Q1 | 推入模式顺延 M5 | 本 SPEC 即其兑现 | ✅ 兑现 |
-| `milestones.md` | 止于 M4；`US-018` GitHub 部分顺延 | 需增补 M5 行 + `US-022`（webhook 集成）/ `US-023`（结果回传）提案，故事归属待拍 | ⬜ 待执行（随 `contracts(M5)` 或 Batch 1 入库） |
+| `milestones.md` | 止于 M4；`US-018` GitHub 部分顺延 | 需增补 M5 行 + `US-022`（webhook 集成）/ `US-023`（结果回传）提案，故事归属待拍 | ✅ **已增补（同笔）**——§1 行 + 新 §6 节 + 重编号 + 变更记录 |
 | `GateChannel` 枚举 | feishu / wecom / webhook | **不动**（GitHub 回传走独立集成）；`outbound_dispatch_logs.channel_kind` 增 `'github'` 属 `contracts(M5)` 事项 | ⬜ contracts(M5) 笔 |
 | 「门禁规则整体计算」 | 实测产品行为（simulator 留档） | Q6 已裁定备选先行：专用数据集隔离，不改求值内核；文档写明整体计算为产品行为 | ✅ 已裁定（2026-11-19） |
 

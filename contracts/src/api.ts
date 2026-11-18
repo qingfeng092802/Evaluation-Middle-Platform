@@ -47,6 +47,7 @@ import {
   RegressionGateCreate,
   RegressionGateUpdate,
 } from './gate.js';
+import { GithubIntegration, PrTriggerRule } from './github.js';
 import {
   EvaluatorConfig,
   EvaluatorTemplate,
@@ -149,6 +150,18 @@ export const ModelPriceListResponse = z.object({
 
 export const RegressionGateListResponse = z.object({
   items: z.array(RegressionGate),
+  page: PageMeta,
+});
+
+/** M5：GitHub 集成（读取形状零凭据——布尔位在 `GithubIntegration` 契约内）。 */
+export const GithubIntegrationListResponse = z.object({
+  items: z.array(GithubIntegration),
+  page: PageMeta,
+});
+
+/** M5：PR → 评测集触发规则列表（Q6 备选先行：绑定 PR 专用冒烟集）。 */
+export const PrTriggerRuleListResponse = z.object({
+  items: z.array(PrTriggerRule),
   page: PageMeta,
 });
 
@@ -349,6 +362,9 @@ export const WRITE_ONLY_FIELDS: Readonly<Record<string, readonly string[]>> = {
   /** 探针的临时覆盖 Key：明文只走这一次请求，响应里绝不回显。 */
   ModelProviderProbeRequest: ['apiKeyOverride'],
   TargetVersionConfig_t2_http: ['authHeader'],
+  /** M5：GitHub 集成凭据——PEM 私钥与 webhook_secret 只进写入形状，读取形状只有布尔位。 */
+  GithubIntegrationCreate: ['privateKey', 'webhookSecret'],
+  GithubIntegrationUpdate: ['privateKey', 'webhookSecret'],
 } as const;
 
 /**
