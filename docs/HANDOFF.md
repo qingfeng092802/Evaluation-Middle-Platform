@@ -28,8 +28,8 @@
 | M1 | ✅ `dc04385` / tag `v0.1.0-m1`（已推）—— 确定性评测闭环 |
 | M2 | ✅ `5277fd5` / tag `v0.1.0-m2`（已推）—— 多模型网关 / Judge / SSE 并发 |
 | M3 | ✅ **merge `2dec565` / tag `v0.1.0-m3`（2026-11-18 已推）** —— AB 对比与 Badcase Diff |
-| **M4** | **Batch 2 / 3 / 4 已完成并推送（分支 `feat/m4-gates`，tip `eb56dc0`）；Batch 1 推迟；Batch 5 未启动** |
-| 当前分支 | `feat/m4-gates`（HEAD = `eb56dc0`） |
+| **M4** | **Batch 2 / 3 / 4 已完成并推送（分支 `feat/m4-gates`）；研发自检记录已补齐（SPEC-M4 §6，2026-11-18）；Batch 1 推迟（两项受阻，见 SPEC-M4 §0 检查 2/3）；Batch 5 未启动** |
+| 当前分支 | `feat/m4-gates`（HEAD = `1ab8f90`；本笔自检补齐落库后以 `git log --oneline -1` 实读为准） |
 | `main` HEAD | `2dec565`（= origin/main） |
 | 工作区状态 | 干净（`git status --porcelain` 为空） |
 | 全量门禁读数 | **833 passed / 0 skipped / 0 failed（70 文件，298s）**；`typecheck` + `lint:design` 绿 |
@@ -50,7 +50,10 @@ cf6fc58  feat(M4): Batch 2 gates CRUD 与判定引擎（US-017 数据面）   �
 21c7fed  contracts(M4): 台账 time 维 + unknownCostCases + T2 开关翻 true（Batch 4 三项契约扩展）
 8c18075  feat(M4): Batch 4 成本台账聚合 + PG-10 大盘 + PG-09 渠道 Tab + PG-07 算子库 + US-021 T2
 3f53cf3  test(M4): globalSetup 自举 dev server——浏览器对账测试不再静默 skipped
-eb56dc0  feat(M4): Batch 4 补齐——门禁固定历史基线求值（gate.baselineId）   ← 分支 tip
+eb56dc0  feat(M4): Batch 4 补齐——门禁固定历史基线求值（gate.baselineId）
+d3c99ef  docs(handoff): 交接包 v2——M4 Batch 2-4 收尾时点
+1ab8f90  docs(M3): 第二次独立复核 ACCEPT 留档（M3-复核记录 / SPEC-M4 v0.3）
+（分支 tip 随自检补齐笔后移，复验以 `git log --oneline -1` 实读为准）
 ```
 
 分支拓扑：`feat/m3-baseline-chain` 已**回卷**到 `25cd0ce`（纯 M3，完全包含于 main；
@@ -63,7 +66,7 @@ eb56dc0  feat(M4): Batch 4 补齐——门禁固定历史基线求值（gate.bas
 ```bash
 cd "D:/Evaluation Middle Platform/src"
 git log --oneline -1 origin/main                 # 2dec565 merge(M3): …
-git log --oneline -1 origin/feat/m4-gates        # eb56dc0 feat(M4): Batch 4 补齐…
+git log --oneline -1 origin/feat/m4-gates        # ≥ 1ab8f90（自检补齐笔后以实读为准）
 git ls-remote --tags origin | grep m3            # refs/tags/v0.1.0-m3
 git status --porcelain                           # 空
 npm run typecheck && npm run lint:design         # 双绿

@@ -354,18 +354,57 @@ jsonb）/ `gate_evaluations`（留痕，不可变）/ `eval_runs.cost_*`（台�
 
 ---
 
-## 6. 研发自检记录（Batch 完成后填写，当前为空模板）
+## 6. 研发自检记录（2026-11-18 填写）
 
 > 本节由研发侧在 M4 最后一个 commit 前填写，对应各 Batch 准出条件。
 > **「已通过」只对实跑过的检查项成立**；未跑的项目必须显式列为「未验证」。
+> 填写说明：Batch 2–4 按 Q0 连带影响裁定（§1.10）先行推进，本记录在 Batch 5 启动前补齐；
+> §6.3 读数均来自本仓实跑，环境条件逐条写明。
 
-### 6.1 提交信息（待填）
+### 6.1 提交信息
 
-### 6.2 批次完成情况（待填）
+- **分支**：`feat/m4-gates`；**基线**：`25cd0ce`（M3 终点，= merge `2dec565` 同 tree）
+- **提交链（按批次，可逐条 `git show` 校验）**：
 
-### 6.3 机械门禁实测（待填：每条读数必须写明环境条件；`npm test` 必须写 N passed / M skipped）
+| 批次 | commit | 内容 |
+|---|---|---|
+| SPEC 起草（未动业务代码） | `b2315a9` → `877509b` | SPEC-M4 v0.1 草案 → v0.2 九项裁定回填（仅 `docs/Spec/SPEC-M4.md`） |
+| Batch 2（US-017 数据面） | `a6f1dfe` / `cf6fc58` | gates CRUD 与判定引擎。同名两笔：先笔被 pre-commit 钩子拦下，`cf6fc58` 为重发笔 |
+| Batch 2 契约笔 | `f39b855` | CI 回调 Token 契约 + `0020_callback_tokens` 迁移（拉取鉴权，Q1=C） |
+| Batch 3（US-018） | `51c7367` → `3bdc828` | contracts 补 UNAUTHORIZED（拉取鉴权 401）→ feat 回调 Token 生命周期 + 拉取鉴权 + 出站派发 |
+| Batch 4 契约笔 | `21c7fed` | 台账 time 维 + unknownCostCases + T2 开关翻 true（三项契约扩展） |
+| Batch 4 | `8c18075` | 成本台账聚合 + PG-10 大盘 + PG-09 渠道 Tab + PG-07 算子库 + US-021 T2 |
+| Batch 4 收尾 | `3f53cf3` → `eb56dc0` | globalSetup 自举 dev server（浏览器对账测试不再静默 skipped）→ 门禁固定历史基线求值（`gate.baselineId`） |
+| 留档笔 | `d3c99ef` → `1ab8f90` | 交接包 v2 → 第二次 M3 复核 ACCEPT 留档（M3-复核记录 / SPEC-M4 v0.3） |
+
+- **契约纪律**：三笔契约扩展（`f39b855` / `51c7367` / `21c7fed`）均单独成笔，未与业务代码混笔。
+
+### 6.2 批次完成情况
+
+| 批次 | 交付物 | 关键落点（可寻址） | 测试 |
+|---|---|---|---|
+| Batch 2 ✅ | 门禁规则 CRUD + 判定引擎（US-017 数据面）+ 回调 Token 契约与 `0020` 迁移 | `app/api/gates/`（`route.ts` / `[gateId]/` / `results/[runId]/`）、`db/repo/gates.ts`、`lib/api/services/gates.ts` | `tests/gates.spec.ts` |
+| Batch 3 ✅ | 回调 Token 生命周期 + 拉取鉴权 + 出站派发（Q1=C 拉取模式，明文仅返回一次） | `0020_callback_tokens` 迁移；UNAUTHORIZED 401 错误码 | `tests/callback-token.spec.ts` |
+| Batch 4 ✅ | 成本台账聚合（`GROUPING SETS`，fixture 行排除口径）+ PG-10 台账大盘 + PG-09 推送渠道 Tab + PG-07 算子库 + US-021 T2 Target（`TARGET_T2_ENABLED` 翻 true） | `app/api/ledger/route.ts`、`db/repo/ledger.ts`、`app/ledger/page.tsx`、`app/settings/channels-section.tsx`、`app/evaluators/page.tsx` + `app/api/evaluators/`、`lib/runner/execute-case.ts` 扩展 | `tests/ledger.spec.ts`（6 用例）、`tests/evaluators.spec.ts`、`tests/target-t2.spec.ts`、`tests/m4-ui.spec.ts` |
+| Batch 4 补齐 ✅ | 门禁固定历史基线求值（`gate.baselineId`：判定锁定提名时的基线，不受后续 re-nominate 影响） | `db/repo/gates.ts` + `lib/api/services/gates.ts` | `tests/gates-pinned-baseline.spec.ts`（262 行） |
+
+### 6.3 机械门禁实测
+
+**环境条件**（除注明外各条相同）：Windows 10.0.26300 x64 · Node v24.18.0 · vitest 2.1.9（node_modules 实装值）· `dev:all` 完整真栈常驻（`eval-platform-db` healthy :5433 + migrate/seed + fixture :8787 + worker + `next dev` :3000）· 单测经 `tests/setup/test-env.ts` 派生落隔离库 `eval_platform_test`（`fileParallelism=false` 串行）· 浏览器用例真实 Edge（`3f53cf3` 起 globalSetup 自举 dev server，skip=0）。
+
+| 门禁 | 命令 | 读数 |
+|---|---|---|
+| 类型检查 | `npm run typecheck` | **exit 0**（应用 + `@eval-platform/contracts` 双 workspace；2026-11-18 本会话实跑 + `1ab8f90` pre-commit 链内复跑） |
+| 设计门禁 | `npm run lint:design` | **exit 0**（eslint `--max-warnings=0` 0 条 + stylelint + `[check:tokens] 通过：131 个文件`，2026-11-18 本会话实跑） |
+| 全量测试 | `npm test` | **exit 0，70 files / 833 passed / 0 skipped / 0 failed**。两次独立读数：① 收尾会话（HANDOFF v2 §1 记 298s）；② 本会话 2026-11-18 03:13:07 起、301.26s（`1ab8f90` pre-commit 链内，同读数） |
+| 跨层渲染对账 | `npm run check:datasets-render` | **exit 0**：`/datasets apiItems=6 renderedRows=6 statusCount=6`、`/runs apiItems=9 renderedRows=9 statusCount=9`（2026-11-18 本会话真栈实跑，与 M1/M3 留档口径一致） |
+
+`1ab8f90` 提交时 pre-commit 三道门禁（typecheck → lint → `npm test -- --reporter=dot`）链序执行全绿，收尾输出 `[pre-commit] 全部门禁通过`。
 
 ### 6.4 未验证范围（如实列出，不写「应该没问题」）
 
-（初始沿承：U-1 关闭前的 `taskkill` 分支、真实厂商网关、LiteLLM 真容器、浏览器
-`EventSource`、`e2e-fail.ts` 原样运行——处置随 Batch 1 补验结果更新。）
+1. **U-1**：`taskkill /T /F` 子孙清理分支在 CI / 另一台 Windows 机器的确认。固定口径不变：「H-11 的 `taskkill` 子孙清理分支未覆盖。本机 SIGKILL 生效，taskkill 分支被安全分类器拒绝。该分支的清理效果需在 CI 或另一台 Windows 机器确认。」备注（仅作环境参考读数，**不构成 U-1 关闭**）：`1ab8f90` pre-commit 的 globalSetup teardown 在本机真实执行了 `taskkill /T /F PID 48920` 且成功。
+2. **M2 三项补验**（Batch 1 准入闸门，受阻）：真实厂商网关（限流 / 超时 / 非 200 / 流式 / 账单对账）、LiteLLM sidecar 真容器（路由转发与并发限流）、浏览器层 `EventSource`（真实浏览器 SSE 断线重连）。**受阻原因**：本机无 `.env`、无 `tools/litellm/gateway.env`、无真实厂商 Key，物理不可执行；解除条件：需求方按 Q8 提供真实 Key（走本地 `.env` 不入库）后随 Batch 1/5 补位。
+3. **`e2e-fail.ts` 原样运行**：随 Batch 1 补验（M2 期间以同错误类等价手段替代过，原前置状态「fixture 进程真的不在」未复现）。
+4. **真实 CI 联调**（Batch 5 `[INT-M4-13]`：测试仓库发 PR → CI 拉取 `GET /api/gates/results/{runId}` JSON → CI 侧渲染）：未执行。GitHub PAT 按 Q1=C 裁定与 `工程规则.md` §9 **平台永不持有**，无此项验证义务（凭证由 CI 侧自管）。
+5. **Batch 5 其余项**：安全加固收尾（`[INT-M4-14]`）与最终独立验收（`[INT-M4-15]`）未启动；`v0.1.0` 正式 tag 待需求方授权。
