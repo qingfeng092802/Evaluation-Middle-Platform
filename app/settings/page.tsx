@@ -34,31 +34,34 @@ import {
   type ProviderDraft,
 } from '@/lib/ui/providers';
 import { ChannelsSection } from './channels-section';
+import { GatesRulesSection } from './gates-rules-section';
+import { BaselinesSection } from './baselines-section';
 
 /**
- * `PG-09` · 管理配置 —— **模型网关 Tab**（`US-015`，M2 · Batch 2）。
+ * `PG-09` · 管理配置 —— 四个 Tab 全量（M2/M3/M4 交付 + M4 收尾补齐）：
  *
- * 两个区块：
- *  1. **厂商**：列表（名称 / 类型 / Key 掩码 / 并发上限 / 状态 / 更新时间）
- *     + 新建/编辑表单。Key 只写不读：输入框初值恒为空，已有 Key 只以掩码旁注。
- *  2. **单价**：按厂商列出千 Token 单价（调价只增行、不改行）+ 新增表单。
+ *  1. **模型网关**（`US-015`）：厂商 + 单价。Key 只写不读：输入框初值恒为空，
+ *     已有 Key 只以掩码旁注。
+ *  2. **门禁规则**（`US-017`，M4 收尾）：规则 CRUD + 启用/停用 + 派发历史（0021 留痕）。
+ *  3. **基线确认**（`US-020`/`US-013`，M4 收尾）：待审提名列表；ROLE-B 确认/驳回，
+ *     ROLE-A 只读（BL-1）。
+ *  4. **推送渠道**（`US-018`）：渠道管理与回调 Token。
  *
- * 另外三个 Tab（门禁规则 / 基线确认 / 推送渠道）仍是 M4，这里不给死链，
- * 只写一句「未上线」并说明归属。
- *
- * ⚠️ 本页不发任何未声明的请求：只打 `/api/providers`、`/api/providers/{id}`、`/api/prices`。
+ * ⚠️ 本页不发任何未声明的请求：只打 `/api/providers`、`/api/providers/{id}`、
+ * `/api/prices`、`/api/gates`、`/api/gates/{id}`、`/api/gates/{id}/dispatch-logs`、
+ * `/api/baselines`、`/api/baselines/{id}/decision`、`/api/datasets`。
  */
 
-/** 尚未交付的 Tab。只为让用户知道「不是坏了」，不给可点入口。 */
-const PENDING_TABS: readonly { readonly label: string; readonly milestone: string }[] = [
-  { label: '门禁规则', milestone: 'M4' },
-  { label: '基线确认', milestone: 'M4' },
-];
-
-type SettingsTab = 'providers' | 'channels';
+type SettingsTab = 'providers' | 'gates' | 'baselines' | 'channels';
 
 function tabOf(t: SettingsTab): string {
-  return t === 'providers' ? '模型网关' : '推送渠道';
+  return t === 'providers'
+    ? '模型网关'
+    : t === 'gates'
+      ? '门禁规则'
+      : t === 'baselines'
+        ? '基线确认'
+        : '推送渠道';
 }
 
 export default function SettingsPage(): React.ReactElement {
@@ -102,11 +105,22 @@ export default function SettingsPage(): React.ReactElement {
           >
             {tabOf('channels')}
           </button>
-          {PENDING_TABS.map((t) => (
-            <span key={t.label} className="px-3 py-1 text-sm text-muted-foreground">
-              {t.label}（{t.milestone} 上线）
-            </span>
-          ))}
+          <button
+            type="button"
+            onClick={() => setTab('gates')}
+            aria-current={tab === 'gates' ? 'page' : undefined}
+            className={cnTab(tab === 'gates')}
+          >
+            {tabOf('gates')}
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('baselines')}
+            aria-current={tab === 'baselines' ? 'page' : undefined}
+            className={cnTab(tab === 'baselines')}
+          >
+            {tabOf('baselines')}
+          </button>
         </div>
 
         {tab === 'providers' ? (
@@ -129,8 +143,12 @@ export default function SettingsPage(): React.ReactElement {
               }}
             />
           </>
-        ) : (
+        ) : tab === 'channels' ? (
           <ChannelsSection />
+        ) : tab === 'gates' ? (
+          <GatesRulesSection />
+        ) : (
+          <BaselinesSection />
         )}
       </div>
     </AppShellWithTheme>
