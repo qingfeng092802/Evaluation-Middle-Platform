@@ -274,3 +274,33 @@ export function deriveGateOverall(
   const blocked = evaluations.some((e) => e.action === 'BLOCK' && !e.passed);
   return blocked ? 'FAIL' : 'PASS';
 }
+
+// ---------------------------------------------------------------------------
+// OutboundDispatchLog（出站派发留痕，0021 `outbound_dispatch_logs`，只追加）
+// ---------------------------------------------------------------------------
+
+/** 单次派发结果。FAILED 必须带原因（数据库 `ck_outbound_dispatch_logs_error` 双向强制）。 */
+export const DispatchStatus = z.enum(['SUCCESS', 'FAILED']);
+export type DispatchStatus = z.infer<typeof DispatchStatus>;
+
+/**
+ * 单次出站派发的留痕行（PG-09「渠道历史 / 失败原因」的数据面）。
+ *
+ * 渠道不可达是常态：留痕的意义是事后可回答「哪条规则、哪个渠道、为什么没送达」。
+ * `retryCount` 当前恒为 0（派发单次尝试，无自动重试引擎）；重试 / 补投递上线后
+ * 每次都以**新增一行**记录，历史行永不改写（表级不可变触发器强制）。
+ */
+export const OutboundDispatchLog = z.object({
+  id: Uuid,
+  gateId: Uuid,
+  evalRunId: Uuid,
+  channelKind: GateChannel.shape.kind,
+  channelUrl: z.string(),
+  /** 实际发出的载荷原样（feishu / wecom 为消息体，webhook 为 GateDispatchSummary）。 */
+  payload: z.unknown(),
+  status: DispatchStatus,
+  errorMessage: z.string().nullable(),
+  retryCount: z.number().int().min(0),
+  dispatchedAt: IsoDateTime,
+});
+export type OutboundDispatchLog = z.infer<typeof OutboundDispatchLog>;

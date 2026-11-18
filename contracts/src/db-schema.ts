@@ -5,9 +5,10 @@
  * `docs/facts/database-schema.md` §2 的 DDL；这里只固化那些
  * 「必须被代码与测试同时引用、且改了会静默出错」的元信息：
  *
- *  - 15 张表的**名字与迁移顺序**（少一张 = 外键建不出来）；
+ *  - 15 张核心表的**名字与迁移顺序**（少一张 = 外键建不出来；0019-0021 建的
+ *    三张横切表见 `CROSS_CUTTING_MIGRATIONS`）；
  *  - **哪些表整表不可变**、`eval_runs` 何时冻结；
- *  - **17 个触发器的确切名字**（`T-10` 断言用）。
+ *  - **触发器的确切名字**（`T-10` 断言用，现 21 个）。
  *
  * 为什么触发器名要进代码：`technical-solution.md` TS-4 短板 3 已点名
  * 「Drizzle 表达不了触发器，schema 与真实 DDL 存在漂移风险」。
@@ -38,6 +39,8 @@ export const TABLE_NAMES = [
   'gateway_idempotency',
   // M4（0020）：CI 回调 Token（US-018 拉取鉴权；仅存 SHA-256 哈希，明文不落库）
   'callback_tokens',
+  // M4 收尾（0021）：出站派发留痕（PG-09 渠道历史 / 失败可追责，只追加）
+  'outbound_dispatch_logs',
 ] as const;
 export type TableName = (typeof TABLE_NAMES)[number];
 
@@ -93,6 +96,11 @@ export const CROSS_CUTTING_MIGRATIONS = [
     file: '0020_callback_tokens.sql',
     purpose: 'CI callback token (US-018 pull auth; hash-only storage)',
   },
+  {
+    no: 21,
+    file: '0021_outbound_dispatch_logs.sql',
+    purpose: 'outbound dispatch audit log (US-018 delivery history, append-only)',
+  },
 ] as const;
 
 /**
@@ -109,6 +117,8 @@ export const FULLY_IMMUTABLE_TABLES = [
   'eval_case_results',
   'gate_evaluations',
   'case_human_labels',
+  // M4 收尾（0021）：派发留痕只追加（重试 / 补投递 = 新增一行）
+  'outbound_dispatch_logs',
 ] as const satisfies ReadonlyArray<TableName>;
 
 /**
@@ -130,12 +140,14 @@ export const STATE_MACHINE_GUARDED_TABLES = [
 /**
  * 触发器全名单（`T-10` 存在性断言的标准答案）。
  *
- * 构成：7 张完全不可变表 × (`no_update` + `no_delete`) = 14
+ * 构成：7 张完全不可变表 × (`no_update` + `no_delete`) = 14（0016 循环）
  *      + `eval_runs` 的 `guard` + `no_delete`          =  2
  *      + `baselines` 的 `guard`（状态机无删除触发器）    =  1
  *      + `gateway_idempotency` 的 `no_delete` + `usage_once` =  2   ← M2-1（0019）
+ *      + `callback_tokens` 的 `immutable`（组合触发器）  =  1   ← M4（0020）
+ *      + `outbound_dispatch_logs` 的 `immutable`（组合触发器） = 1 ← M4 收尾（0021）
  *                                                     ------
- *                                                        19
+ *                                                        21
  *
  * ⚠️ `gateway_idempotency` 刻意**没有** `no_update`：占位发生在调用之前（此时
  * 还没有用量），真实用量必须调用成功后回填。它以 `usage_once` 取代 `no_update`，
@@ -147,6 +159,9 @@ export const STATE_MACHINE_GUARDED_TABLES = [
  *
  * 2026-11-12（M2 Batch 1）：新增 `gateway_idempotency`（M2-1 幂等账本）后
  * 变为 **19**。`database-schema.md` §6 的 `T-10` 已同步为 19。
+ *
+ * 2026-11-18（M4 Batch 3）：新增 `callback_tokens`（0020）后变为 **20**。
+ * 2026-11-19（M4 收尾）：新增 `outbound_dispatch_logs`（0021）后变为 **21**。
  */
 export const TRIGGER_NAMES = [
   'trg_dataset_versions_no_update',
@@ -171,6 +186,8 @@ export const TRIGGER_NAMES = [
   'trg_gateway_idempotency_usage_once',
   // M4（0020）：CI 回调 Token 只存哈希、写入后不可变（重置 = 新签发）
   'trg_callback_tokens_immutable',
+  // M4 收尾（0021）：出站派发留痕只追加（重试 / 补投递 = 新增一行）
+  'trg_outbound_dispatch_logs_immutable',
 ] as const;
 export type TriggerName = (typeof TRIGGER_NAMES)[number];
 

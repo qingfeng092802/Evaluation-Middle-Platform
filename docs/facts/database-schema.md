@@ -8,7 +8,10 @@
 > 建立日期：2026-11-07 · 状态：**已确认**
 > **表数量：13 张业务表 + 1 张门禁执行留痕表 + 1 张人工标注留痕表 + 1 张网关幂等账本 = 16 张。**
 > （**2026-11-12 M2 Batch 1 增补第 16 张 `gateway_idempotency`**，见 §2.16。）
-> （需求方口头为「13 张」，因 `targets` / `target_versions` 原为一组、展开后实为 14 张；
+>
+> **2026-11-18 M4 Batch 3 增补第 17 张 `callback_tokens`**（CI 回调 Token，0020，见 §2.17）；
+> **2026-11-19 M4 收尾增补第 18 张 `outbound_dispatch_logs`**（出站派发留痕，0021，见 §2.18）。
+> 合计 **18 张**，以 `src/contracts/src/db-schema.ts` 的 `TABLE_NAMES` 为可编译索引。> （需求方口头为「13 张」，因 `targets` / `target_versions` 原为一组、展开后实为 14 张；
 > 加上 2026-11-07 拍板新增的 `case_human_labels`（`OUT-5` 的物理落点），合计 **15 张**。以本文件为准。）
 >
 > **2026-11-15 复核：** 合计 **16 张**（M2 新增 `gateway_idempotency`，见 `0019_claim_epoch.sql`）。:9 的「16 张」为现行值，本括号原写「15 张」为 M1 历史值，保留原文并以此复核行为准。
@@ -80,10 +83,14 @@
 | 14 | `gate_evaluations` | `0014_gate_evaluations.sql` | **是** |
 | 15 | `case_human_labels` | `0015_case_human_labels.sql` | **是**（只增不改） |
 | 16 | `gateway_idempotency` | `0019_claim_epoch.sql` | **不可删**；用量只允许「占位 → 回填」一次 |
+| 17 | `callback_tokens` | `0020_callback_tokens.sql` | **是**（重置 = 新签发一行） |
+| 18 | `outbound_dispatch_logs` | `0021_outbound_dispatch_logs.sql` | **是**（只追加；重试 = 新增一行） |
 | — | 不可变触发器 | `0016_immutability_triggers.sql` | — |
 | — | 队列辅助函数 | `0017_queue_functions.sql` | — |
 | — | 心跳租约（`heartbeat_at` + 回收判据） | `0018_heartbeat_lease.sql` | — |
 | — | Fencing token（`claim_epoch`）+ 幂等账本 | `0019_claim_epoch.sql` | — |
+| — | CI 回调 Token 表 | `0020_callback_tokens.sql` | — |
+| — | 出站派发留痕表 | `0021_outbound_dispatch_logs.sql` | — |
 
 ### 1.1 ER 关系图
 
@@ -113,6 +120,10 @@ erDiagram
     evaluators        ||--o{ run_evaluators      : "模板（弱引用，无 FK）"
 
     eval_case_results ||--o{ case_human_labels   : "人工标注（只增不改，P0 不建界面）"
+
+    regression_gates  ||--o{ callback_tokens     : "回调 Token（只存哈希）"
+    regression_gates  ||--o{ outbound_dispatch_logs : "派发留痕（只追加）"
+    eval_runs         ||--o{ outbound_dispatch_logs : "派发上下文"
 ```
 
 > **两处刻意不建外键**：
@@ -805,6 +816,83 @@ CREATE INDEX idx_gateway_idempotency_run ON gateway_idempotency (eval_run_id);
 
 ---
 
+### 2.17 `callback_tokens` — CI 回调 Token（M4 Batch 3，`0020_callback_tokens.sql`）
+
+> **要解决的事**：CI（GitHub Actions）以拉取模式取门禁结果时需要防篡改的凭证。
+> **只存 SHA-256 哈希**，明文仅在签发响应中出现一次；MVP 口径 `expires_at = NULL`（不过期）。
+
+```sql
+CREATE TABLE callback_tokens (
+  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  gate_id     uuid        NOT NULL REFERENCES regression_gates (id) ON DELETE CASCADE,
+  token_hash  text        NOT NULL,   -- SHA-256 hex；明文不落库
+  expires_at  timestamptz,            -- NULL = 不过期
+  created_by  text        NOT NULL,
+  created_at  timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT uq_callback_tokens_hash UNIQUE (token_hash)
+);
+
+CREATE INDEX ix_callback_tokens_gate ON callback_tokens (gate_id);
+```
+
+**设计说明**：
+
+| 决策 | 理由 |
+|---|---|
+| **不可变（重置 = 新签发）** | 行写入后 UPDATE / DELETE 均被 `trg_callback_tokens_immutable` 拒绝；吊销语义由「新增一行 + 查询侧取最新」承载，避免新增状态机。 |
+| **只存哈希** | 明文 Token 一旦落库，库泄露即等价于凭据泄露（`工程规则` §9 同源纪律）。 |
+
+> **触发器的特殊性**：单条组合触发器（`BEFORE UPDATE OR DELETE`，0020 起的新范式），
+> 不进 §3.2 的 0016 通用循环。
+
+---
+
+### 2.18 `outbound_dispatch_logs` — 出站派发留痕（M4 收尾，`0021_outbound_dispatch_logs.sql`）
+
+> **要解决的事**：出站派发（飞书 / 企微 / Webhook）此前失败只有 `console.warn`——
+> 事后无法回答「哪条规则、哪个渠道、为什么没送达」。留痕让派发历史与失败原因可查（PG-09）。
+
+```sql
+CREATE TABLE outbound_dispatch_logs (
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  gate_id       uuid        NOT NULL REFERENCES regression_gates (id) ON DELETE CASCADE,
+  eval_run_id   uuid        NOT NULL REFERENCES eval_runs (id) ON DELETE CASCADE,
+  channel_kind  text        NOT NULL,
+  channel_url   text        NOT NULL,
+  payload       jsonb       NOT NULL,
+  status        text        NOT NULL,
+  error_message text,
+  -- 重试次数（重试机制属后续批次；当前派发单次尝试，恒为 0 —— 只记事实，不编语义）
+  retry_count   int         NOT NULL DEFAULT 0,
+  dispatched_at timestamptz NOT NULL DEFAULT now(),
+
+  CONSTRAINT ck_outbound_dispatch_logs_kind CHECK (channel_kind IN ('feishu', 'wecom', 'webhook')),
+  CONSTRAINT ck_outbound_dispatch_logs_status CHECK (status IN ('SUCCESS', 'FAILED')),
+  CONSTRAINT ck_outbound_dispatch_logs_error CHECK (
+    (status = 'FAILED' AND error_message IS NOT NULL)
+    OR (status = 'SUCCESS' AND error_message IS NULL)
+  ),
+  CONSTRAINT ck_outbound_dispatch_logs_retry CHECK (retry_count >= 0)
+);
+
+CREATE INDEX ix_outbound_dispatch_logs_gate ON outbound_dispatch_logs (gate_id, dispatched_at DESC);
+```
+
+**设计说明**：
+
+| 决策 | 理由 |
+|---|---|
+| **只追加、整表不可变** | 派发历史是审计证据（与 `gate_evaluations` 同一法理）；重试 / 补投递 = **新增一行**，历史行永不改写。`trg_outbound_dispatch_logs_immutable` 双拒 UPDATE / DELETE。 |
+| **SUCCESS / FAILED 都落行** | 只记失败会让「到底发没发出去」不可问；成对落行才能对账「判定 N 条、派发 M 次」。 |
+| **HTTP 非 2xx 记为 FAILED** | `fetch` 对非 2xx **不抛错**——若只捕获异常，渠道端 4xx/5xx 会被静默当成成功。落库时显式判 `res.ok`。 |
+| **`retry_count` 恒为 0 不是假字段** | 列按规格落库（需求方 2026-11-18 指令），当前派发为单次尝试、无自动重试引擎；重试上线后每次重试以新增一行并递增计数，**不编造从未发生的重试**。 |
+| **无凭据可泄** | `GateChannel` 契约只有 webhook URL（永不出现 token / PAT 字段），payload 为消息体或派发摘要。 |
+
+> **触发器的特殊性**：单条组合触发器（0020 同款范式），不进 §3.2 的 0016 通用循环。
+
+---
+
 ## 3. 不可变触发器（`0016_immutability_triggers.sql`）
 
 > **`PT-2` 不能只写在文档里，必须由数据库兜底。**
@@ -1023,7 +1111,7 @@ $$;
 | ER-4 | `trigger_source IN ('MANUAL','CI_WEBHOOK')` | `eval_runs` | 无法区分人工/CI 触发 |
 | ER-5 | `baseline_run_id <> id` | `eval_runs` | 自己对比自己，Δ 恒为 0 却看着正常 |
 | BL-1 | 部分唯一索引「每集一个 CONFIRMED」 | `baselines` | 双基线，退化计算全废 |
-| IM-1 | **7** 张表 `UPDATE`/`DELETE` 拒绝触发器 | `0016` | 历史被静默改写 |
+| IM-1 | **9** 张表 `UPDATE`/`DELETE` 拒绝触发器 | `0016` 循环 7 张 + `0020`/`0021` 组合触发器 2 张 | 历史被静默改写 |
 | IM-2 | `eval_runs` 终态冻结触发器 | `0016` | 已发布结果被改 |
 | Q-1 | 僵尸回收函数存在且被调度 | `0017` §4.1 | 重启后任务永卡 `RUNNING` |
 | HL-1 | `case_human_labels` 只增不改（无 `UPDATE`/`DELETE`） | `0016` | 人工标注被事后篡改，且倒推开不可变评测结果 |
@@ -1046,7 +1134,7 @@ $$;
 | T-07 | 第二条 `CONFIRMED` 基线插入失败 | 先插一条 `CONFIRMED`，再插 → 唯一索引冲突 |
 | T-08 | `baselines` 已决行再决抛异常 | `CONFIRMED` 后改 `REJECTED` → 抛异常 |
 | T-09 | `dataset_cases` 同版本重复 `case_key` 插入失败 | 唯一约束冲突 |
-| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **19** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17 + `gateway_idempotency` × 2 = **19**）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES` |
+| T-10 | **触发器存在性断言** | 查 `pg_trigger`，断言 **21** 个触发器（7 表 × 2 = 14 + `eval_runs` × 2 = 16 + `baselines` × 1 = 17 + `gateway_idempotency` × 2 = 19 + `callback_tokens` × 1 = 20 + `outbound_dispatch_logs` × 1 = **21**）全部存在。标准答案见 `src/contracts/src/db-schema.ts` 的 `TRIGGER_NAMES`。**勘误（2026-11-19）**：本行自 0020 起漏更（代码已为 20，此处仍写 19），随 0021 一并修正 |
 | T-11 | `cost_total` 生成列随分列自动更新 | `UPDATE` 分列 → 断言 `cost_total = target + judge` |
 | T-12 | `ck_eval_runs_failed_null_score` 生效 | 置 `FAILED` 且 `score_overall` 非 NULL → 抛异常 |
 | T-13 | `reclaim_stale_runs()` 把超时 `RUNNING` 退回 `PENDING` | 造一行 `RUNNING` + `started_at` 早于阈值（`heartbeat_at` 为 NULL）→ 调用函数 → 断言状态与 `started_at IS NULL` |
@@ -1075,3 +1163,5 @@ $$;
 | 2026-11-07 | **SSE 事件回放拍板（`snapshot_only` 定稿）** | 需求方拍板：**不做 `Last-Event-ID` 事件回放**，不加环形缓冲。重连一律先拉全量快照（`GET /api/runs/:id`）再续订 `/stream`。相关文档的「待拍板」措辞已全部退休（见 `technical-solution.md` §3.4、`src/contracts/README.md`）。本文件无 DDL 变更。 |
 | 2026-11-09 | **心跳租约（`0018_heartbeat_lease.sql`，#6 方案 A）** | 缺陷：`reclaim_stale_runs()` 只看 `started_at`，任何耗时超过阈值的**正常** run 都被另一 worker 抢走并二次执行；行级幂等挡得住重复行，挡不住重复的网关调用（重复计费 vs. `cost_target` 只记一次）。变更：§2.9 `eval_runs` 增 `heartbeat_at timestamptz`（可空）；§4.1 判定改为 `GREATEST(started_at, heartbeat_at) < now() - p_stale_after`，回收时同时清空 `heartbeat_at`；`heartbeat_at IS NULL` 回退到 `started_at`，T-13/T-14 语义不变。配套：worker 按 `WORKER_STALE_AFTER / 3` 续约（间隔由 TTL 派生，不单独配置）；down 脚本置于 `db/migrations/down/0018_heartbeat_lease.down.sql`（非递归扫描 ⇒ 不会被 `migrate()` 自动执行），已用影子库验证「前滚 → 回滚 → 再前滚」。 |
 | 2026-11-12 | **M2 Batch 1：fencing token + 网关幂等账本（`0019_claim_epoch.sql`）** | ① **M2-3 fencing**：§2.9 `eval_runs` 增 `claim_epoch bigint NOT NULL DEFAULT 0`；`claim_next_run()` 领取时 `claim_epoch + 1`，返回类型改为 `SETOF eval_runs`（空队列不再返回全 NULL 行）；`reclaim_stale_runs()` **不回退** epoch（单调性即安全前提）。worker 的心跳 / 结果 / 终态写入全部带 `WHERE claim_epoch = $epoch`，旧属主写入影响 0 行 ⇒ 立即放弃。**补的是 0018 留下的那个洞**：`heartbeat_at` 只回答「能不能回收」，回答不了「回收后谁能写」—— 长停顿（非死亡）的旧属主醒来会把它重新点亮。② **M2-1 幂等账本**：新增 §2.16 第 16 张表 `gateway_idempotency`（`UNIQUE(idempotency_key)`，键派生自 `run_id + case_key + attempt_kind`，**不存明文 Key**）；不可变语义为**不可删** + **用量只允许 `0 → 实际值` 回填一次**（刻意不加 `no_update`：占位在调用之前，回填补不进去会导致**少计费**，比重复计费更难发现）。③ §6 `T-10` 触发器 17 → **19**（`trg_gateway_idempotency_no_delete` + `trg_gateway_idempotency_usage_once`）。down 脚本：`db/migrations/down/0019_claim_epoch.down.sql`。 |
+| 2026-11-18 | **M4 Batch 3：CI 回调 Token（`0020_callback_tokens.sql`）——本条为 2026-11-19 回填** | 新增第 17 张表（US-018 拉取鉴权，Q1=C 裁定）：`callback_tokens`，**只存 SHA-256 哈希**、明文仅签发响应出现一次、`expires_at` MVP 口径为 NULL（不过期）；不可变（重置 = 新签发），单条组合触发器 `trg_callback_tokens_immutable`（0020 起的新范式，不进 §3.2 循环）。**本文件当时漏记此条**（§1 / §2 / §6 / §7 均缺席，且 §6 T-10 停在 19 与代码的 20 矛盾），随 0021 一并回填修正。down 脚本：`db/migrations/down/0020_callback_tokens.down.sql`。 |
+| 2026-11-19 | **M4 收尾：出站派发留痕（`0021_outbound_dispatch_logs.sql`）** | 需求方指令「派发失败不得只有 console.warn」：新增第 18 张表（§2.18），SUCCESS / FAILED 都落行、FAILED 必带 `error_message`（CHECK 双向强制）、HTTP 非 2xx 显式记 FAILED（修复 fetch 不抛错的静默成功漏洞）；只追加不可变（组合触发器），`retry_count` 按规格落列、当前恒为 0（无自动重试引擎，重试 = 新增行）。§0 计数 16 → **18**；§1 增两行；ER 图加三条关系；§5 `IM-1` 7 → **9** 张；§6 `T-10` → **21** 并勘误 0020 漏更。契约注册：`db-schema.ts` 表/触发器/横切迁移同步 +1；openapi 增 `OutboundDispatchLog` 与 `GET /api/gates/{gateId}/dispatch-logs`。down 脚本：`db/migrations/down/0021_outbound_dispatch_logs.down.sql`。 |

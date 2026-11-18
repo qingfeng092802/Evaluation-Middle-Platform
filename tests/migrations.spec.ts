@@ -116,16 +116,17 @@ beforeEach(async () => {
 });
 
 describe('AC-1 · 迁移与不可变红线', () => {
-  it('T-10 触发器全名单恰好 20 个，且逐一存在', async () => {
+  it('T-10 触发器全名单恰好 21 个，且逐一存在', async () => {
     const res = await client.query<{ tgname: string }>(
       `SELECT tgname FROM pg_trigger WHERE NOT tgisinternal ORDER BY tgname`,
     );
     const actual = res.rows.map((r) => r.tgname).sort();
     // 17（M1）→ 19（M2 Batch 1 新增 gateway_idempotency 的 no_delete + usage_once）
-    // → 20（M4 Batch 3 新增 callback_tokens 的不可变触发器）。
+    // → 20（M4 Batch 3 新增 callback_tokens 的不可变触发器）
+    // → 21（M4 收尾新增 outbound_dispatch_logs 的不可变触发器，0021）。
     // 硬编码是**故意**的：`EXPECTED_TRIGGER_COUNT` 由 `TRIGGER_NAMES.length` 算出，
     // 若只断言两者相等，把名单和数量一起改错就测不出来。
-    expect(EXPECTED_TRIGGER_COUNT).toBe(20);
+    expect(EXPECTED_TRIGGER_COUNT).toBe(21);
     expect(actual).toEqual([...TRIGGER_NAMES].sort());
   });
 
@@ -284,6 +285,63 @@ describe('AC-1 · 迁移与不可变红线', () => {
     await client.query(`UPDATE eval_runs SET status = 'COMPLETED' WHERE id = $1`, [id]);
     const row = await one<{ status: string }>(`SELECT status FROM eval_runs WHERE id = $1`, [id]);
     expect(row.status).toBe('COMPLETED');
+  });
+
+  // —— 0021 outbound_dispatch_logs（派发留痕只追加，IM-1 第 8/9 张的落点）——
+
+  /** 最小可用的 gate 行（挂在一个真实 dataset 上，满足 FK；派发留痕表引用它）。 */
+  async function insertGate(): Promise<{ gateId: string; runId: string }> {
+    const runId = await insertRun({ status: 'COMPLETED' });
+    const gate = await one<{ id: string }>(
+      `INSERT INTO regression_gates (name, dataset_id, condition, action, created_by)
+       SELECT 'gate-t', dv.dataset_id, '{"metric":"score_overall","op":"<","value":0.85}'::jsonb, 'BLOCK', 't'
+         FROM dataset_versions dv WHERE dv.id = $1 RETURNING id`,
+      [(await one<{ dataset_version_id: string }>(`SELECT dataset_version_id FROM eval_runs WHERE id = $1`, [runId])).dataset_version_id],
+    );
+    return { gateId: gate.id, runId };
+  }
+
+  async function insertDispatchLog(gateId: string, runId: string): Promise<string> {
+    const row = await one<{ id: string }>(
+      `INSERT INTO outbound_dispatch_logs
+         (gate_id, eval_run_id, channel_kind, channel_url, payload, status, error_message)
+       VALUES ($1, $2, 'webhook', 'http://127.0.0.1:9/hook', $3::jsonb, 'FAILED', 'connection refused')
+       RETURNING id`,
+      [gateId, runId, JSON.stringify({ gateId, evalRunId: runId, overall: 'FAIL' })],
+    );
+    return row.id;
+  }
+
+  it('T-23 outbound_dispatch_logs UPDATE 抛异常（只追加）', async () => {
+    const { gateId, runId } = await insertGate();
+    const id = await insertDispatchLog(gateId, runId);
+    const msg = await expectDbError(`UPDATE outbound_dispatch_logs SET status = 'SUCCESS' WHERE id = $1`, [id]);
+    expect(msg).toContain('immutable');
+  });
+
+  it('T-24 outbound_dispatch_logs DELETE 抛异常（重试 = 新增行，不改写历史）', async () => {
+    const { gateId, runId } = await insertGate();
+    const id = await insertDispatchLog(gateId, runId);
+    const msg = await expectDbError(`DELETE FROM outbound_dispatch_logs WHERE id = $1`, [id]);
+    expect(msg).toContain('immutable');
+  });
+
+  it('T-25 SUCCESS 行不允许编造 error_message（CHECK 双向强制）', async () => {
+    const { gateId, runId } = await insertGate();
+    const okMsg = await expectDbError(
+      `INSERT INTO outbound_dispatch_logs
+         (gate_id, eval_run_id, channel_kind, channel_url, payload, status, error_message)
+       VALUES ($1, $2, 'feishu', 'https://open.feishu.cn/hook/x', '{}'::jsonb, 'SUCCESS', 'oops')`,
+      [gateId, runId],
+    );
+    expect(okMsg).toContain('ck_outbound_dispatch_logs_error');
+    const failMsg = await expectDbError(
+      `INSERT INTO outbound_dispatch_logs
+         (gate_id, eval_run_id, channel_kind, channel_url, payload, status)
+       VALUES ($1, $2, 'feishu', 'https://open.feishu.cn/hook/x', '{}'::jsonb, 'FAILED')`,
+      [gateId, runId],
+    );
+    expect(failMsg).toContain('ck_outbound_dispatch_logs_error');
   });
 });
 

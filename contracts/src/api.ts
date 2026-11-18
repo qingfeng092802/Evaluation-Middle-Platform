@@ -40,7 +40,9 @@ import {
   BaselineDecision,
   BaselineNominate,
   BaselineResolution,
+  BaselineStatus,
   GateResultEnvelope,
+  OutboundDispatchLog,
   RegressionGate,
   RegressionGateCreate,
   RegressionGateUpdate,
@@ -149,6 +151,19 @@ export const RegressionGateListResponse = z.object({
   items: z.array(RegressionGate),
   page: PageMeta,
 });
+
+/** `GET /api/gates/{gateId}/dispatch-logs` 的查询（0021 派发历史）。 */
+export const DispatchLogListResponse = z.object({
+  items: z.array(OutboundDispatchLog),
+  page: PageMeta,
+});
+
+/** `GET /api/baselines` 查询（openapi 已先行定义，本处补可编译形状）。 */
+export const BaselineListQuery = z.object({
+  datasetId: Uuid,
+  status: BaselineStatus.optional(),
+});
+export type BaselineListQuery = z.infer<typeof BaselineListQuery>;
 
 export const BaselineListResponse = z.object({
   items: z.array(Baseline),

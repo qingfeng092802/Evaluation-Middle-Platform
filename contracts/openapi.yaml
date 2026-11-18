@@ -859,6 +859,38 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorResponse' }
 
+  /api/gates/{gateId}/dispatch-logs:
+    get:
+      tags: [gates]
+      summary: 出站派发历史（0021，PG-09「渠道历史 / 失败原因」）
+      description: |
+        每次派发尝试一行，只追加不可改写（表级不可变触发器）。
+        FAILED 行必带 `errorMessage`；`retryCount` 当前恒为 0
+        （派发单次尝试，无自动重试引擎，重试上线后以新增行记录）。
+      parameters:
+        - name: gateId
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: 派发留痕列表（按 dispatched_at 倒序）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, page]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/OutboundDispatchLog' }
+                  page: { $ref: '#/components/schemas/PageMeta' }
+        '404':
+          description: 门禁规则不存在
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorResponse' }
+
   # ---------------------------------------------------------------- providers
   /api/providers:
     get:
@@ -1711,6 +1743,22 @@ components:
         datasetId: { type: string, format: uuid }
         evalRunId: { type: string, format: uuid }
         note: { type: string, maxLength: 2000, description: 提名理由，不可为空 }
+
+    OutboundDispatchLog:
+      type: object
+      required: [id, gateId, evalRunId, channelKind, channelUrl, payload, status, retryCount, dispatchedAt]
+      description: 出站派发留痕（0021，只追加不可改写）
+      properties:
+        id: { type: string, format: uuid }
+        gateId: { type: string, format: uuid }
+        evalRunId: { type: string, format: uuid }
+        channelKind: { type: string, enum: [feishu, wecom, webhook] }
+        channelUrl: { type: string, format: uri }
+        payload: { description: 实际发出的载荷原样（feishu/wecom 消息体，webhook 为派发摘要） }
+        status: { type: string, enum: [SUCCESS, FAILED] }
+        errorMessage: { type: [string, 'null'] }
+        retryCount: { type: integer, minimum: 0, description: 当前恒为 0（无自动重试引擎） }
+        dispatchedAt: { type: string, format: date-time }
 
     RegressionGate:
       type: object
