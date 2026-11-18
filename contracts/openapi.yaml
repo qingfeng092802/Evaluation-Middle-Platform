@@ -1967,7 +1967,7 @@ components:
       required: [status, deduped, runId]
       description: 入站处理结果（200 / 202 同构；401 走 ErrorResponse）
       properties:
-        status: { type: string, enum: [TRIGGERED, SKIPPED_CLOSED, SKIPPED_UNBOUND, DEDUPED, REJECTED_SIGNATURE] }
+        status: { type: string, enum: [TRIGGERED, SKIPPED_CLOSED, SKIPPED_UNBOUND, DEDUPED, REJECTED_SIGNATURE, SKIPPED_EVENT] }
         deduped: { type: boolean }
         runId: { type: [string, 'null'], format: uuid }
 

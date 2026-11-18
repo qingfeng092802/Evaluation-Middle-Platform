@@ -57,6 +57,8 @@ export const WebhookProcessStatus = z.enum([
   'SKIPPED_UNBOUND',
   'DEDUPED',
   'REJECTED_SIGNATURE',
+  /** 非评测事件（GitHub ping 等）——验真后落账但不触发评测（0024 增补 DB 枚举）。 */
+  'SKIPPED_EVENT',
 ]);
 export type WebhookProcessStatus = z.infer<typeof WebhookProcessStatus>;
 
