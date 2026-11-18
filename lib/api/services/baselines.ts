@@ -13,16 +13,18 @@
  *   队列），唯一性由确认时的 `ux_baselines_one_confirmed` 报 409 兜底。
  * - `datasetId` 与 run 实际所属评测集不匹配 → 400（请求体语义自相矛盾，属脏输入）。
  */
-import { BaselineDecision, BaselineNominate, Uuid } from '@eval-platform/contracts';
+import { BaselineDecision, BaselineNominate, BaselineStatus, Uuid } from '@eval-platform/contracts';
 import type { Baseline, BaselineResolution } from '@eval-platform/contracts';
 import { BadRequestError, ConflictError, NotFoundError } from '../http.js';
 import {
+  datasetExists,
   decideBaseline as repoDecideBaseline,
   findBaselineIdByRun,
   getBaselineResolution,
   getBaselineRow,
   getRunNominationContext,
   insertBaseline,
+  listBaselines as repoListBaselines,
 } from '../../../db/repo/baselines.js';
 
 /** MVP 单机标识（裁定 2）。有真实身份体系时再演进，勿提前发明。 */
@@ -57,6 +59,21 @@ export async function resolveBaseline(datasetIdRaw: string | null): Promise<Base
   const res = await getBaselineResolution(datasetId);
   if (!res) throw new NotFoundError('评测集不存在');
   return { datasetId, confirmed: res.confirmed, pendingNominations: res.pendingNominations };
+}
+
+/**
+ * 基线列表（PG-09「基线确认」Tab 数据面；`GET /api/baselines`）。
+ * 评测集不存在 → 404；`status` 缺省不过滤（openapi 已先行定义该参数，枚举由契约校验）。
+ */
+export async function listBaselines(
+  datasetIdRaw: string | null,
+  statusRaw: string | null,
+): Promise<{ items: Baseline[]; page: { nextCursor: null; total: number } }> {
+  const datasetId = Uuid.parse(datasetIdRaw);
+  if (!(await datasetExists(datasetId))) throw new NotFoundError('评测集不存在');
+  const status = statusRaw === null ? null : BaselineStatus.parse(statusRaw);
+  const items = await repoListBaselines(datasetId, status);
+  return { items, page: { nextCursor: null, total: items.length } };
 }
 
 /**

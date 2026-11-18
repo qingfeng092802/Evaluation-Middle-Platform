@@ -8,7 +8,7 @@
  *    流转目标只能是 CONFIRMED / REJECTED。
  */
 import type { Baseline } from '@eval-platform/contracts';
-import { iso, isoOrNull, num, queryOne } from './_client.js';
+import { iso, isoOrNull, num, numOrNull, query, queryOne } from './_client.js';
 
 /** baselines 行形状（snake_case，与 0012 DDL 逐字一致）。 */
 interface BaselineRow {
@@ -144,4 +144,40 @@ export async function getBaselineResolution(
     confirmed: confirmedRow ? mapBaseline(confirmedRow) : null,
     pendingNominations: num(pending?.n ?? '0'),
   };
+}
+
+export async function datasetExists(id: string): Promise<boolean> {
+  const row = await queryOne<{ ok: number }>(`SELECT 1 AS ok FROM datasets WHERE id = $1`, [id]);
+  return row !== null;
+}
+
+/**
+ * 基线列表（PG-09「基线确认」Tab 数据面；openapi `GET /api/baselines` 已先行定义）。
+ *
+ * `runSummary` 由 JOIN `eval_runs` 一次带出（契约注释：「展示用冗余……避免列表页 N+1 查询」）——
+ * Tab 要展示的「运行名」就在这里。`status` 为 null 时不过滤，按提名时间倒序。
+ */
+export async function listBaselines(
+  datasetId: string,
+  status: string | null,
+): Promise<Baseline[]> {
+  const rows = await query<BaselineRow & { run_name: string; score_overall: string | null; pass_rate: string | null; finished_at: Date | string | null }>(
+    `SELECT b.id, b.dataset_id, b.eval_run_id, b.status, b.note, b.nominated_by,
+            b.nominated_at, b.decided_by, b.decided_at,
+            r.name AS run_name, r.score_overall, r.pass_rate, r.finished_at
+       FROM baselines b
+       JOIN eval_runs r ON r.id = b.eval_run_id
+      WHERE b.dataset_id = $1${status === null ? '' : ' AND b.status = $2'}
+      ORDER BY b.nominated_at DESC, b.id DESC`,
+    status === null ? [datasetId] : [datasetId, status],
+  );
+  return rows.map((r) => ({
+    ...mapBaseline(r),
+    runSummary: {
+      runName: r.run_name,
+      scoreOverall: numOrNull(r.score_overall),
+      passRate: numOrNull(r.pass_rate),
+      finishedAt: isoOrNull(r.finished_at),
+    },
+  }));
 }

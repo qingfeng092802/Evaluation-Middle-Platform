@@ -7,7 +7,7 @@
  * 幂等：同 (gate_id, eval_run_id) 的留痕由仓储层查重后跳过插入（0014 无唯一约束）。
  */
 import { GateCondition, GateChannel } from '@eval-platform/contracts';
-import type { RegressionGate } from '@eval-platform/contracts';
+import type { OutboundDispatchLog, RegressionGate } from '@eval-platform/contracts';
 import { iso, query, queryOne } from './_client.js';
 
 interface GateRow {
@@ -347,4 +347,81 @@ export async function getDatasetIdForRun(runId: string): Promise<string | null> 
     [runId],
   );
   return row?.dataset_id ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// outbound_dispatch_logs（出站派发留痕，0021；只追加，IM-1 第 9 张）
+// ---------------------------------------------------------------------------
+
+export type DispatchStatusRow = 'SUCCESS' | 'FAILED';
+
+export async function gateExists(id: string): Promise<boolean> {
+  const row = await queryOne<{ ok: number }>(`SELECT 1 AS ok FROM regression_gates WHERE id = $1`, [
+    id,
+  ]);
+  return row !== null;
+}
+
+/**
+ * 落一行派发留痕。**每次尝试一行**（SUCCESS / FAILED 都落——只记失败会让
+ * 「到底发没发出去」不可问）；表级不可变触发器拒绝任何 UPDATE / DELETE。
+ */
+export async function insertOutboundDispatchLog(input: {
+  gateId: string;
+  evalRunId: string;
+  channelKind: string;
+  channelUrl: string;
+  payload: unknown;
+  status: DispatchStatusRow;
+  errorMessage: string | null;
+}): Promise<void> {
+  await query(
+    `INSERT INTO outbound_dispatch_logs
+       (gate_id, eval_run_id, channel_kind, channel_url, payload, status, error_message)
+     VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7)`,
+    [
+      input.gateId,
+      input.evalRunId,
+      input.channelKind,
+      input.channelUrl,
+      JSON.stringify(input.payload ?? null),
+      input.status,
+      input.errorMessage,
+    ],
+  );
+}
+
+/** 派发历史（PG-09「渠道历史 / 失败原因」数据面），按 dispatched_at 倒序。 */
+export async function listOutboundDispatchLogs(gateId: string): Promise<OutboundDispatchLog[]> {
+  const rows = await query<{
+    id: string;
+    gate_id: string;
+    eval_run_id: string;
+    channel_kind: string;
+    channel_url: string;
+    payload: unknown;
+    status: string;
+    error_message: string | null;
+    retry_count: number;
+    dispatched_at: Date | string;
+  }>(
+    `SELECT id, gate_id, eval_run_id, channel_kind, channel_url, payload, status,
+            error_message, retry_count, dispatched_at
+       FROM outbound_dispatch_logs
+      WHERE gate_id = $1
+      ORDER BY dispatched_at DESC, id DESC`,
+    [gateId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    gateId: r.gate_id,
+    evalRunId: r.eval_run_id,
+    channelKind: r.channel_kind as OutboundDispatchLog['channelKind'],
+    channelUrl: r.channel_url,
+    payload: r.payload,
+    status: r.status as OutboundDispatchLog['status'],
+    errorMessage: r.error_message,
+    retryCount: r.retry_count,
+    dispatchedAt: iso(r.dispatched_at),
+  }));
 }

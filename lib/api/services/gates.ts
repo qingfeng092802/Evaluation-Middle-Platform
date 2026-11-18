@@ -31,6 +31,7 @@ import type {
   GateCondition,
   GateEvaluationDetail,
   GateResultEnvelope,
+  OutboundDispatchLog,
   RegressionGate,
 } from '@eval-platform/contracts';
 import type { CallbackTokenResponse } from '@eval-platform/contracts';
@@ -40,14 +41,17 @@ import {
   createCallbackToken,
   createGate as repoCreateGate,
   findActiveCallbackToken,
+  gateExists,
   getDatasetIdForRun,
   getGateRow,
   getVersionContext,
   hasEvaluation,
   insertGateEvaluation,
+  insertOutboundDispatchLog,
   listActiveGatesForDatasetVersion,
   listEvaluationsByRun,
   listGatesByDataset,
+  listOutboundDispatchLogs,
   updateGate as repoUpdateGate,
 } from '../../../db/repo/gates.js';
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../http.js';
@@ -227,26 +231,69 @@ export interface GateDispatchSummary {
   runName: string;
 }
 
-/** 出站派发：逐 channel POST 其形状的载荷；失败只告警不阻塞（渠道不可达是常态）。 */
+/**
+ * 出站派发：逐 channel POST 其形状的载荷；失败告警**并落留痕**（0021），
+ * 不阻塞主流程（渠道不可达是常态）。
+ *
+ * 留痕语义（0021 `outbound_dispatch_logs`，只追加）：
+ *  - SUCCESS / FAILED **都落行**——只记失败会让「到底发没发出去」不可问；
+ *  - `fetch` 对 HTTP 非 2xx **不抛错**，必须显式判 `res.ok`，否则渠道端 4xx/5xx
+ *    会被静默当成成功；
+ *  - 留痕写入失败只告警（审计通道自身故障不能反过来拖垮派发）；
+ *  - `retryCount` 恒为 0：无自动重试引擎，重试上线后以新增行记录（不编造语义）。
+ */
 export async function dispatchGateResult(channels: GateChannel[], summary: GateDispatchSummary): Promise<void> {
   for (const ch of channels) {
+    const body =
+      ch.kind === 'feishu'
+        ? { msg_type: 'text', content: { text: `【评测门禁】${summary.runName} 判定 ${summary.overall}（${summary.gateName}）` } }
+        : ch.kind === 'wecom'
+          ? { msgtype: 'markdown', markdown: { content: `**评测门禁** ${summary.runName}：${summary.overall}（${summary.gateName}）` } }
+          : summary;
+    let status: 'SUCCESS' | 'FAILED';
+    let errorMessage: string | null = null;
     try {
-      const body =
-        ch.kind === 'feishu'
-          ? { msg_type: 'text', content: { text: `【评测门禁】${summary.runName} 判定 ${summary.overall}（${summary.gateName}）` } }
-          : ch.kind === 'wecom'
-            ? { msgtype: 'markdown', markdown: { content: `**评测门禁** ${summary.runName}：${summary.overall}（${summary.gateName}）` } }
-            : summary;
-      await fetch(ch.url, {
+      const res = await fetch(ch.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
         signal: AbortSignal.timeout(5_000),
       });
+      if (res.ok) {
+        status = 'SUCCESS';
+      } else {
+        status = 'FAILED';
+        errorMessage = `HTTP ${res.status}`;
+      }
     } catch (err) {
-      console.warn(`[gates] 出站派发失败（${ch.kind} ${ch.url}）：`, (err as Error).message);
+      status = 'FAILED';
+      errorMessage = (err as Error).message;
+      console.warn(`[gates] 出站派发失败（${ch.kind} ${ch.url}）：`, errorMessage);
+    }
+    try {
+      await insertOutboundDispatchLog({
+        gateId: summary.gateId,
+        evalRunId: summary.evalRunId,
+        channelKind: ch.kind,
+        channelUrl: ch.url,
+        payload: body,
+        status,
+        errorMessage,
+      });
+    } catch (logErr) {
+      console.warn(`[gates] 派发留痕写入失败（${ch.kind} ${ch.url}）：`, (logErr as Error).message);
     }
   }
+}
+
+/** 派发历史（`GET /api/gates/{gateId}/dispatch-logs`，0021）；gate 不存在 → 404。 */
+export async function listDispatchLogs(
+  gateIdRaw: string | null,
+): Promise<{ items: OutboundDispatchLog[]; page: { nextCursor: null; total: number } }> {
+  const gateId = Uuid.parse(gateIdRaw);
+  if (!(await gateExists(gateId))) throw new NotFoundError('门禁规则不存在');
+  const items = await listOutboundDispatchLogs(gateId);
+  return { items, page: { nextCursor: null, total: items.length } };
 }
 
 /**
