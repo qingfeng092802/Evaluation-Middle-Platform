@@ -160,10 +160,18 @@ async function killTree(p: WorkerProc, force = false): Promise<void> {
 
   // 2. `taskkill /T /F` 兜底：清掉 tsx 拉起的子孙进程（Windows 专属）。
   //    被杀环境拒绝时它只是白跑一趟，不影响上面那条路径。
+  //    退出码必须打日志：U-1 的 CI 关闭判据之一就是「exit=0」可在日志里 grep
+  //    （本机被安全分类器拒时为非 0；windows runner 上应为 0）。见 U-1-CI-验证清单.md。
   await new Promise<void>((resolve) => {
     const k = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { shell: false });
-    k.on('exit', () => resolve());
-    k.on('error', () => resolve());
+    k.on('exit', (code) => {
+      console.log(`[killTree] taskkill /PID ${String(pid)} /T /F exit=${String(code)}`);
+      resolve();
+    });
+    k.on('error', () => {
+      console.log(`[killTree] taskkill /PID ${String(pid)} /T /F spawn-error`);
+      resolve();
+    });
   });
 
   await exited;
