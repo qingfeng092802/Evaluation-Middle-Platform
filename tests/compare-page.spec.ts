@@ -71,8 +71,8 @@ beforeAll(async () => {
     SKIP_REASON = 'dev 库中没有同版本的两个 COMPLETED run（先跑一次真实评测）';
     return;
   }
-  const baseRun = pairEntry[1][0]?.id ?? '';
-  const currentRun = pairEntry[1][1]?.id ?? '';
+  let baseRun = pairEntry[1][0]?.id ?? '';
+  let currentRun = pairEntry[1][1]?.id ?? '';
   if (baseRun === '' || currentRun === '') {
     SKIP_REASON = '同版本 COMPLETED run 不足两条';
     return;
@@ -100,6 +100,19 @@ beforeAll(async () => {
     const { body } = await apiJson(`/api/baselines/resolution?datasetId=${datasetId}`);
     return ((body as { confirmed?: { evalRunId?: string } | null }).confirmed?.evalRunId) ?? '';
   };
+
+  // dev 库多会话演进后可能已有 CONFIRMED 基线且指向别的 run（合法状态）：以已确认
+  // 基线为锚重选对比对——对第二条基线确认必被 409 拒（BL-1），换锚只改当前指向（BL-4）。
+  const existingConfirmed = await resolution();
+  if (existingConfirmed !== '' && existingConfirmed !== baseRun) {
+    baseRun = existingConfirmed;
+    const others = pairEntry[1].map((r) => r.id).filter((id) => id !== baseRun);
+    if (others.length === 0) {
+      SKIP_REASON = '已确认基线所在版本没有第二个 COMPLETED run 可作对比';
+      return;
+    }
+    currentRun = others[0] ?? currentRun;
+  }
 
   if ((await resolution()) !== baseRun) {
     const nom = await apiJson('/api/baselines', {

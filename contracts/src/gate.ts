@@ -284,19 +284,26 @@ export const DispatchStatus = z.enum(['SUCCESS', 'FAILED']);
 export type DispatchStatus = z.infer<typeof DispatchStatus>;
 
 /**
- * 单次出站派发的留痕行（PG-09「渠道历史 / 失败原因」的数据面）。
+ * 出站留痕的通道口径。**与 `GateChannel`（规则级通知渠道配置，Q2 不动）刻意分离**：
+ * `github` 是 M5 回传的集成级通道（Commit Status / PR 评论），不出现在规则渠道配置里。
+ */
+export const DispatchChannelKind = z.enum(['feishu', 'wecom', 'webhook', 'github']);
+export type DispatchChannelKind = z.infer<typeof DispatchChannelKind>;
+
+/**
+ * 单次出站派发的留痕行（0021 `outbound_dispatch_logs`，只追加）。
  *
  * 渠道不可达是常态：留痕的意义是事后可回答「哪条规则、哪个渠道、为什么没送达」。
  * `retryCount` 当前恒为 0（派发单次尝试，无自动重试引擎）；重试 / 补投递上线后
- * 每次都以**新增一行**记录，历史行永不改写（表级不可变触发器强制）。
+ * 每次都以**新增一行**记录，历史行永不改写。
  */
 export const OutboundDispatchLog = z.object({
   id: Uuid,
   gateId: Uuid,
   evalRunId: Uuid,
-  channelKind: GateChannel.shape.kind,
+  channelKind: DispatchChannelKind,
   channelUrl: z.string(),
-  /** 实际发出的载荷原样（feishu / wecom 为消息体，webhook 为 GateDispatchSummary）。 */
+  /** 实际发出的载荷原样（feishu / wecom 为消息体，webhook / github 为出站请求体）。 */
   payload: z.unknown(),
   status: DispatchStatus,
   errorMessage: z.string().nullable(),

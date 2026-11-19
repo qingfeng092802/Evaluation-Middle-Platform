@@ -345,6 +345,23 @@ describe('AC-1 · 迁移与不可变红线', () => {
     expect(failMsg).toContain('ck_outbound_dispatch_logs_error');
   });
 
+  // —— 0025 出站通道枚举增补 'github'（M5 Batch 3 回传留痕）——
+
+  it('T-32 outbound_dispatch_logs 接受 channel_kind = github（Q5 回传留痕）', async () => {
+    const { gateId, runId } = await insertGate();
+    await client.query(
+      `INSERT INTO outbound_dispatch_logs
+         (gate_id, eval_run_id, channel_kind, channel_url, payload, status, error_message)
+       VALUES ($1, $2, 'github', 'https://api.github.com/repos/o/r/statuses/abc', '{}'::jsonb, 'FAILED', 'HTTP 500')`,
+      [gateId, runId],
+    );
+    const row = await one<{ channel_kind: string }>(
+      `SELECT channel_kind FROM outbound_dispatch_logs WHERE eval_run_id = $1 LIMIT 1`,
+      [runId],
+    );
+    expect(row.channel_kind).toBe('github');
+  });
+
   // —— 0022 github_push_mode（M5 推入模式数据底座）——
 
   /** 最小可用的 github 集成行（App 形态；返回 id）。 */

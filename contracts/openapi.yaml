@@ -1920,7 +1920,7 @@ components:
         id: { type: string, format: uuid }
         gateId: { type: string, format: uuid }
         evalRunId: { type: string, format: uuid }
-        channelKind: { type: string, enum: [feishu, wecom, webhook] }
+        channelKind: { type: string, enum: [feishu, wecom, webhook, github] }
         channelUrl: { type: string, format: uri }
         payload: { description: 实际发出的载荷原样（feishu/wecom 消息体，webhook 为派发摘要） }
         status: { type: string, enum: [SUCCESS, FAILED] }
