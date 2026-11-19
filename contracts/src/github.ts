@@ -22,7 +22,7 @@
  * ⚠️ 未编译验证，详见 README.md。
  */
 import { z } from 'zod';
-import { IsoDateTime, Uuid } from './common.js';
+import { IsoDateTime, PageMeta, Uuid } from './common.js';
 
 // ---------------------------------------------------------------------------
 // 入站：GitHub Webhook（pull_request 三态白名单）
@@ -182,3 +182,37 @@ export type CommitStatusInput = z.infer<typeof CommitStatusInput>;
 /** `POST /repos/{owner}/{repo}/issues/{number}/comments` 的请求体（Q5 评论顺延半批）。 */
 export const PRCommentInput = z.object({ body: z.string().min(1) });
 export type PRCommentInput = z.infer<typeof PRCommentInput>;
+
+// ---------------------------------------------------------------------------
+// 投递历史查询（PG-09「GitHub 集成」区块的数据面；0022 webhook_deliveries 只追加账本）
+// ---------------------------------------------------------------------------
+
+/** 投递处理的白名单摘要（`webhook_deliveries.payload_summary` 的契约形状）。 */
+export const GithubDeliverySummary = z.object({
+  repo_full_name: z.string(),
+  pr_number: z.number().int().min(1),
+  head_sha: z.string(),
+  action: z.string(),
+});
+export type GithubDeliverySummary = z.infer<typeof GithubDeliverySummary>;
+
+/**
+ * 单条投递的读取形状（只追加账本，重放 = 读既有行返回 DEDUPED）。
+ * `runId` 为 null 表示占位触发（Batch 3 前置）或未触发（跳过类状态）。
+ */
+export const GithubDelivery = z.object({
+  id: Uuid,
+  deliveryId: z.string(),
+  event: z.string(),
+  processedStatus: WebhookProcessStatus,
+  runId: Uuid.nullable(),
+  summary: GithubDeliverySummary.nullable(),
+  receivedAt: IsoDateTime,
+});
+export type GithubDelivery = z.infer<typeof GithubDelivery>;
+
+export const GithubDeliveryListResponse = z.object({
+  items: z.array(GithubDelivery),
+  page: PageMeta,
+});
+export type GithubDeliveryListResponse = z.infer<typeof GithubDeliveryListResponse>;
