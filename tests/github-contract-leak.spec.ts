@@ -136,12 +136,13 @@ describe('出站声明（Q5：Status 必交付 / 评论顺延半批）', () => {
   it('CommitStatusInput：state 枚举 + description ≤140', () => {
     const ok = CommitStatusInput.parse({
       state: 'failure',
-      targetUrl: 'https://ep.example/run/1',
+      target_url: 'https://ep.example/run/1',
       description: 'eval-platform: FAIL（score_overall 0.6 < 0.85）',
       context: 'eval-platform/冒烟集',
     });
     expect(ok.state).toBe('failure');
-    expect(CommitStatusInput.safeParse({ state: 'cancelled', targetUrl: 'https://x.dev', description: 'x', context: 'c' }).success).toBe(false);
+    expect(ok.target_url).toBe('https://ep.example/run/1');
+    expect(CommitStatusInput.safeParse({ state: 'cancelled', target_url: 'https://x.dev', description: 'x', context: 'c' }).success).toBe(false);
   });
 
   it('PRCommentInput：body 必填', () => {

@@ -278,6 +278,52 @@ export async function listTriggerRulesByIntegration(
 // 协作式取消（Q3：synchronize → 旧 RUNNING run 的 cancel_requested）
 // ---------------------------------------------------------------------------
 
+/**
+ * 某 run 的 GitHub 回传上下文（集成 × 仓库 × head_sha）。
+ * 经 webhook_deliveries 账本回链（run_id → TRIGGERED 投递 → 集成 → 凭据）。
+ * 集成已停用（is_active=false）则不出站——回传是集成级行为。
+ */
+export async function findGithubOutboundContextForRun(
+  runId: string,
+): Promise<
+  ReadonlyArray<{
+    readonly integrationId: string;
+    readonly repoFullName: string;
+    readonly headSha: string;
+    readonly appId: string;
+    readonly installationId: string;
+    readonly privateKeyCiphertext: string;
+  }>
+> {
+  const rows = await query<{
+    integration_id: string;
+    repo_full_name: string;
+    head_sha: string;
+    app_id: string | null;
+    installation_id: string | null;
+    private_key_ct: string | null;
+  }>(
+    `SELECT DISTINCT d.integration_id,
+            d.payload_summary->>'repo_full_name' AS repo_full_name,
+            d.payload_summary->>'head_sha' AS head_sha,
+            i.app_id, i.installation_id, i.private_key_ct
+       FROM webhook_deliveries d
+       JOIN github_integrations i ON i.id = d.integration_id
+      WHERE d.run_id = $1 AND d.processed_status = 'TRIGGERED' AND i.is_active = true`,
+    [runId],
+  );
+  return rows
+    .filter((r) => r.repo_full_name !== null && r.head_sha !== null)
+    .map((r) => ({
+      integrationId: r.integration_id,
+      repoFullName: r.repo_full_name!,
+      headSha: r.head_sha!,
+      appId: r.app_id ?? '',
+      installationId: r.installation_id ?? '',
+      privateKeyCiphertext: r.private_key_ct ?? '',
+    }));
+}
+
 /** 同 PR 历史触发的 run（经 deliveries 账本回链：payload_summary 存 repo/pr 号）。 */
 export async function listPriorTriggeredRunIds(
   integrationId: string,

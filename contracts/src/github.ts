@@ -166,10 +166,14 @@ export type PrTriggerRule = z.infer<typeof PrTriggerRule>;
 // 出站声明（调用 GitHub API 用——非本平台路由；Q5：Status 必交付 / 评论顺延半批）
 // ---------------------------------------------------------------------------
 
-/** `POST /repos/{owner}/{repo}/statuses/{sha}` 的请求体（平台→GitHub 方向的契约声明）。 */
+/**
+ * `POST /repos/{owner}/{repo}/statuses/{sha}` 的请求体（平台→GitHub 方向的契约声明）。
+ * 字段名按 **GitHub wire 格式 snake_case**（`target_url`）——这是出站载荷，
+ * 与本平台自身的 camelCase 读取契约不同源。
+ */
 export const CommitStatusInput = z.object({
   state: z.enum(['error', 'failure', 'pending', 'success']),
-  targetUrl: z.string().url(),
+  target_url: z.string().url(),
   description: z.string().max(140),
   context: z.string().min(1),
 });

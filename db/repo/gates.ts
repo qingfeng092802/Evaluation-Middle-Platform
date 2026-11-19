@@ -367,7 +367,8 @@ export async function gateExists(id: string): Promise<boolean> {
  * 「到底发没发出去」不可问）；表级不可变触发器拒绝任何 UPDATE / DELETE。
  */
 export async function insertOutboundDispatchLog(input: {
-  gateId: string;
+  /** 集成级回传（channel_kind='github'）无单条规则归属 ⇒ NULL（0026 放宽）。 */
+  gateId: string | null;
   evalRunId: string;
   channelKind: string;
   channelUrl: string;

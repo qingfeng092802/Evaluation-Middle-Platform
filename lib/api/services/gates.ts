@@ -56,6 +56,7 @@ import {
 } from '../../../db/repo/gates.js';
 import { BadRequestError, ConflictError, NotFoundError, UnauthorizedError } from '../http.js';
 import { getBaselineRow } from '../../../db/repo/baselines.js';
+import { dispatchGithubStatusForRun } from './githubStatus.js';
 
 /** MVP 单机标识（与 `baselines` 服务同口径；OUT-4 不做用户体系）。 */
 const LOCAL_ACTOR = 'local';
@@ -391,6 +392,12 @@ export async function evaluateRunGates(runIdRaw: string): Promise<GateResultEnve
       runName: run.name,
     });
   }
+
+  // M5 Batch 3（Q5）：run 维的 GitHub Commit Status 回传——凡 webhook 投递账本
+  // 关联过本 run 的集成 × 仓库 × head_sha 各回传一次（幂等由「仅本轮新判定」保证，
+  // 重复拉取 insertedGates 为空即不重发）。await 后响应（浮空 Promise 纪律），
+  // GitHub 故障只留痕不阻塞（githubStatus 内部吞错 + 落 0021 留痕）。
+  await dispatchGithubStatusForRun({ runId, runName: run.name, overall });
 
   return {
     schemaVersion: '1',

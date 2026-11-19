@@ -2048,11 +2048,11 @@ components:
 
     CommitStatusInput:
       type: object
-      required: [state, targetUrl, description, context]
+      required: [state, target_url, description, context]
       description: 出站声明——平台调用 GitHub API `POST /repos/{o}/{r}/statuses/{sha}`（非本平台路由；Q5 Status 必交付）
       properties:
         state: { type: string, enum: [error, failure, pending, success] }
-        targetUrl: { type: string, format: uri }
+        target_url: { type: string, format: uri }
         description: { type: string, maxLength: 140 }
         context: { type: string }
 
