@@ -157,4 +157,34 @@ describe('PG-09 双 Tab · 真实浏览器', () => {
       { timeoutMs: 10_000, message: '等待保存规则按钮变为可点' },
     );
   }, 60_000);
+
+  it('GitHub 集成 Tab：创建表单在场 + ROLE-B 语义提示 + 集成卡片（投递历史入口）', async (ctx) => {
+    if (SKIP_REASON !== null) return ctx.skip();
+    // 幂等预置集成（201 新建 / 409 名称冲突均可——重跑不炸）
+    const createRes = await fetch(`${BASE}/api/integrations/github`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'settings-tabs 浏览器档集成',
+        appId: '123456',
+        installationId: '987654',
+        privateKey: 'PEM-SENTINEL-BROWSER',
+        webhookSecret: 'sim-webhook-secret-browser',
+        repos: [{ owner: 'o', repo: 'r' }],
+      }),
+    });
+    expect([201, 409]).toContain(createRes.status);
+
+    await setRoleAndReload('B');
+    await openTab('GitHub 集成');
+    await waitForText('创建 GitHub App 集成');
+    const text = await bodyText();
+    expect(text).toContain('App ID');
+    expect(text).toContain('Webhook Secret');
+    expect(text).toContain('当前角色 B（管理员）：可配置集成与触发规则');
+    // 凭据零回显：页面文本不出现 PEM 头（密文/明文都不回显）
+    expect(text).not.toContain('BEGIN RSA');
+    // 集成卡片在场（有集成 → 卡片渲染出投递历史入口）
+    await waitForText('投递历史');
+  }, 60_000);
 });

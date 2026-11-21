@@ -36,6 +36,7 @@ import {
 import { ChannelsSection } from './channels-section';
 import { GatesRulesSection } from './gates-rules-section';
 import { BaselinesSection } from './baselines-section';
+import { GithubIntegrationSection } from './github-integration-section';
 
 /**
  * `PG-09` · 管理配置 —— 四个 Tab 全量（M2/M3/M4 交付 + M4 收尾补齐）：
@@ -52,7 +53,7 @@ import { BaselinesSection } from './baselines-section';
  * `/api/baselines`、`/api/baselines/{id}/decision`、`/api/datasets`。
  */
 
-type SettingsTab = 'providers' | 'gates' | 'baselines' | 'channels';
+type SettingsTab = 'providers' | 'gates' | 'baselines' | 'channels' | 'github';
 
 function tabOf(t: SettingsTab): string {
   return t === 'providers'
@@ -61,7 +62,9 @@ function tabOf(t: SettingsTab): string {
       ? '门禁规则'
       : t === 'baselines'
         ? '基线确认'
-        : '推送渠道';
+        : t === 'github'
+          ? 'GitHub 集成'
+          : '推送渠道';
 }
 
 export default function SettingsPage(): React.ReactElement {
@@ -121,6 +124,14 @@ export default function SettingsPage(): React.ReactElement {
           >
             {tabOf('baselines')}
           </button>
+          <button
+            type="button"
+            onClick={() => setTab('github')}
+            aria-current={tab === 'github' ? 'page' : undefined}
+            className={cnTab(tab === 'github')}
+          >
+            {tabOf('github')}
+          </button>
         </div>
 
         {tab === 'providers' ? (
@@ -147,6 +158,8 @@ export default function SettingsPage(): React.ReactElement {
           <ChannelsSection />
         ) : tab === 'gates' ? (
           <GatesRulesSection />
+        ) : tab === 'github' ? (
+          <GithubIntegrationSection />
         ) : (
           <BaselinesSection />
         )}
