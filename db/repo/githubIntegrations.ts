@@ -185,6 +185,44 @@ export async function findDelivery(deliveryId: string): Promise<DeliveryRow | nu
   );
 }
 
+/** 投递历史（PG-09「GitHub 集成」区块），按 received_at 倒序。 */
+export async function listDeliveries(integrationId: string): Promise<
+  ReadonlyArray<{
+    readonly id: string;
+    readonly deliveryId: string;
+    readonly event: string;
+    readonly processedStatus: string;
+    readonly runId: string | null;
+    readonly summary: unknown;
+    readonly receivedAt: string;
+  }>
+> {
+  const rows = await query<{
+    id: string;
+    delivery_id: string;
+    event: string;
+    processed_status: string;
+    run_id: string | null;
+    payload_summary: unknown;
+    received_at: Date | string;
+  }>(
+    `SELECT id, delivery_id, event, processed_status, run_id, payload_summary, received_at
+       FROM webhook_deliveries
+      WHERE integration_id = $1
+      ORDER BY received_at DESC, id DESC`,
+    [integrationId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    deliveryId: r.delivery_id,
+    event: r.event,
+    processedStatus: r.processed_status,
+    runId: r.run_id,
+    summary: r.payload_summary,
+    receivedAt: iso(r.received_at),
+  }));
+}
+
 // ---------------------------------------------------------------------------
 // pr_trigger_rules（Q6：绑定 PR 专用冒烟集）
 // ---------------------------------------------------------------------------

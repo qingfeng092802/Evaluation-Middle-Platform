@@ -6,12 +6,13 @@
  * `GithubIntegration` 契约的 shape 本身不含凭据键（泄密扫描双保险：
  * `tests/github-contract-leak.spec.ts` 契约层 + `webhook-inbound.spec.ts` API 级）。
  */
-import { GithubIntegrationCreate, GithubIntegrationUpdate, Uuid } from '@eval-platform/contracts';
+import { GithubDeliveryListResponse, GithubIntegrationCreate, GithubIntegrationUpdate, Uuid } from '@eval-platform/contracts';
 import type { GithubIntegration } from '@eval-platform/contracts';
 import { NotFoundError } from '../http.js';
 import {
   createIntegration as repoCreateIntegration,
   getIntegrationRow,
+  listDeliveries as repoListDeliveries,
   listIntegrationViews,
   updateIntegration as repoUpdateIntegration,
 } from '../../../db/repo/githubIntegrations.js';
@@ -53,4 +54,12 @@ export async function updateIntegration(idRaw: string, raw: unknown): Promise<Gi
   const view = await repoUpdateIntegration(id, patch);
   if (!view) throw new NotFoundError('GitHub 集成不存在');
   return view;
+}
+
+/** 投递历史（`GET /api/integrations/github/{id}/deliveries`）；集成不存在 → 404。 */
+export async function listDeliveries(idRaw: string | null): Promise<GithubDeliveryListResponse> {
+  const id = Uuid.parse(idRaw);
+  if (!(await getIntegrationRow(id))) throw new NotFoundError('GitHub 集成不存在');
+  const items = await repoListDeliveries(id);
+  return GithubDeliveryListResponse.parse({ items, page: { nextCursor: null, total: items.length } });
 }

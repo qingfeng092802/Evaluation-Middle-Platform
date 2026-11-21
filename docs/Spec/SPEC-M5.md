@@ -353,21 +353,55 @@ CREATE TABLE pr_trigger_rules (
 
 ---
 
-## 6. 研发自检记录（Batch 完成后填写，当前为空模板）
+## 6. 研发自检记录（2026-11-20 填写）
 
 > 本节由研发侧在 M5 最后一个 commit 前填写，对应各 Batch 准出条件。
 > **「已通过」只对实跑过的检查项成立**；未跑的项目必须显式列为「未验证」。
+> 填写说明：Batch 1–4 按 Q0 连带影响裁定（§1.10）先行推进，本记录在 Batch 5（真实 CI 联调 + 独立复核）启动前补齐。
 
-### 6.1 提交信息（待填）
+### 6.1 提交信息
 
-### 6.2 批次完成情况（待填）
+- **分支**：`feat/m5-webhook`；**基线**：`0226347`（SPEC-M5 v0.2 裁定回填）
+- **提交链（按批次，可逐条 `git show` 校验）**：
 
-### 6.3 机械门禁实测（待填：每条读数必须写明环境条件；`npm test` 必须写 N passed / M skipped）
+| 批次 | commit | 内容 |
+|---|---|---|
+| Batch 1 · 契约笔 | `d22908e` | 0022/0023 迁移 + db-schema 注册（21 表 / 22 触发器）+ zod（webhook 白名单 / 集成非对称 / 出站声明）+ openapi integrations 组 + **治理修订落盘**（工程规则 §9 / PG-09 边界句 / milestones M5 增补 / database-schema §2.19–2.21）+ 泄密扫描契约层 9 用例 + 迁移断言 T-26~T-31 |
+| Batch 2 · 入站 | `6570607` | Webhook 入站路由 + HMAC 验签 + delivery 幂等 + 事件白名单 + PR 映射 + cancel_requested 置位 + 集成配置路由 + **floating promise 修复**（四处 insertDelivery 补 await）+ `webhook-inbound.spec.ts` 7 用例 |
+| Batch 3 前置 | `2678598` | 0025 出站通道枚举 + DispatchChannelKind 契约拆分 + compare-page/pg04 基线发现容忍修复 |
+| Batch 3 · 出站 | `59500e9` | app-auth（JWT RS256 / Token 缓存）+ githubStatus（Commit Status 回传 + 0021 失败留痕）+ evaluateRunGates 挂接 + 0026 gate_id 可空 + **CommitStatusInput snake_case 修正** + `github-outbound.spec.ts` 4 用例 |
+| Batch 4 · 契约笔 | `6cddf1c` | GithubDelivery / GithubDeliveryListResponse + openapi deliveries 路径 |
+| Batch 4 · FE+BE | `0cfa0da` | PG-09 第五 Tab「GitHub 集成」（集成 CRUD / 触发规则 / 投递历史 + 角色语义）+ deliveries 查询路由 + 28 项新增测试 |
+
+### 6.2 批次完成情况
+
+| 批次 | 交付物 | 关键落点 | 测试 |
+|---|---|---|---|
+| Batch 1 ✅ | 数据底座（0022/0023）+ 契约 + 治理修订 | 21 表 / 22 触发器 / github_integrations 凭据互斥 CHECK / webhook_deliveries 只追加不可变 / pr_trigger_rules 至少一策略 CHECK | migrations.spec T-26~T-31 + 泄密扫描 9 用例 |
+| Batch 2 ✅ | Webhook 入站（验签/幂等/映射/取消请求）+ 集成配置路由 | HMAC-SHA256 timingSafeEqual / delivery UNIQUE / PR→评测集映射 | webhook-inbound.spec 7 用例 |
+| Batch 3 ✅ | GitHub App 回传（JWT / Installation Token 缓存 / Commit Status）+ 失败留痕 | app-auth.ts / githubStatus.ts / evaluateRunGates 挂接 / 0025 通道枚举 / 0026 gate_id 可空 | github-outbound.spec 4 用例 |
+| Batch 4 ✅ | PG-09「GitHub 集成」Tab（集成 CRUD / 触发规则 / 投递历史 + 角色语义） | github-integration-section.tsx / lib/ui/githubIntegrations.ts / deliveries 查询路由 | github-integration-ui.spec 19 用例 + github-deliveries.spec 2 用例 + settings-tabs.spec 浏览器档 |
+
+### 6.3 机械门禁实测
+
+**环境条件**：Windows 10.0.26300 x64 · Node v24.18.0 · vitest 2.1.9 · `npm run dev:all` 常驻（globalSetup 自举）· 隔离测试库 `eval_platform_test` · 真实 Edge。
+
+| 门禁 | 命令 | 读数 |
+|---|---|---|
+| 类型检查 | `npm run typecheck` | **exit 0**（应用 + `@eval-platform/contracts` 双 workspace） |
+| 设计门禁 | `npm run lint:design` | **exit 0**（eslint 0 条 + stylelint + `[check:tokens] 通过：136 个文件`） |
+| 全量测试 | `npm test` | **exit 0，78 files / 889 passed / 0 skipped / 0 failed**（`0cfa0da` pre-commit 链内实测） |
+| 跨层渲染对账 | `npm run check:datasets-render` | **exit 0**（`/datasets 6/6/6`、`/runs 9/9/9`） |
 
 ### 6.4 未验证范围（如实列出，不写「应该没问题」）
 
-（初始沿承：U-1 关闭前的 `taskkill` 分支、M2 三项补验、`e2e-fail.ts` 原样运行——处置随
-各自清单更新；M5 自身的新增未验证项随 Batch 5 联调结果回填。）
+1. **U-1**：`taskkill /T /F` 子孙清理分支在 CI / 另一台 Windows 的确认。固定口径不变；关闭路径已清单化（`Spec/U-1-CI-验证清单.md`）。
+2. **M2 三项补验**（Batch 1 准入，受阻）：真实厂商网关 / LiteLLM sidecar 真容器 / 浏览器层 `EventSource`。本机无 `.env` / `gateway.env` / 真实厂商 Key，物理不可执行；解除条件：需求方提供真实 Key 后补验。
+3. **`e2e-fail.ts` 原样运行**：随 Batch 1/5 补验。
+4. **真实 GitHub 仓库 PR 联调**（`[INT-M5-13]`）：需需求方提供 test 仓库。本机铁律禁止连真实外网。
+5. **`scripts/github-ci-simulator.ts` 全链路模拟**：**草案状态**——脚本已编写但因 Mock GitHub API 服务器与平台挂载服务器的端口/时序问题在独立进程中挂起。M5 各闭环已由 spec 测试逐段覆盖（webhook-inbound 7 + github-outbound 4 + 泄密扫描 9 + github-integration-ui 19 + github-deliveries 2 + settings-tabs 浏览器档），独立脚本的调试留作后续完善。
+6. **`v0.2.0-m5` tag**：待独立复核 ACCEPT 后由需求方授权打 tag。
+7. **「门禁求值整体计算」产品行为**（Q6 备选先行）：PR 触发绑定专用冒烟集以隔离；「适用通道」字段改造留作未来专项。
 
 ---
 
